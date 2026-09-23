@@ -1,0 +1,233 @@
+# 生产部署：仅允许人工触发，构建镜像并推送到阿里云 ACR，再通过 SSH 让服务器拉取本次唯一版本。
+name: Deploy Production (Manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 构建并部署
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      IMAGE_NAME: tutor-flow
+      # ACR 镜像路径不是凭据，固定在项目工作流中维护。
+      ACR_IMAGE_PATH: kk09/tutor-flow
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY || 'crpi-g3stl1c9yrlh5x39.cn-beijing.personal.cr.aliyuncs.com' }}
+      DEPLOY_ENV: prod
+      KEEP_VERSIONS: '5'
+      NEED_DOCKER_MIRROR: ${{ secrets.DOCKER_MIRROR_URL != '' }}
+
+    steps:
+      - name: 检出手动选择的代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Docker 镜像加速
+        if: ${{ env.NEED_DOCKER_MIRROR == 'true' }}
+        env:
+          DOCKER_MIRROR_URL: ${{ secrets.DOCKER_MIRROR_URL }}
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /etc/docker
+          printf '{"registry-mirrors":["%s"]}\n' "$DOCKER_MIRROR_URL" \
+            | sudo tee /etc/docker/daemon.json >/dev/null
+          sudo systemctl restart docker
+
+      - name: 构建并推送 ACR 镜像
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${ACR_REGISTRY:?ACR_REGISTRY 不能为空}"
+          : "${ACR_USERNAME:?missing ACR_USERNAME secret}"
+          : "${ACR_PASSWORD:?missing ACR_PASSWORD secret}"
+
+          ACR_IMAGE="${ACR_REGISTRY}/${ACR_IMAGE_PATH}"
+          BUILD_TAG="${DEPLOY_ENV}-${GITHUB_RUN_NUMBER}"
+          ROLLING_TAG="${DEPLOY_ENV}-latest"
+
+          printf '%s\n' "$ACR_PASSWORD" \
+            | docker login "$ACR_REGISTRY" -u "$ACR_USERNAME" --password-stdin
+          trap 'docker logout "$ACR_REGISTRY" >/dev/null 2>&1 || true' EXIT
+
+          docker build --progress=plain \
+            -t "${ACR_IMAGE}:${BUILD_TAG}" \
+            -t "${ACR_IMAGE}:${ROLLING_TAG}" .
+          docker push "${ACR_IMAGE}:${BUILD_TAG}"
+          docker push "${ACR_IMAGE}:${ROLLING_TAG}"
+
+          printf 'ACR_IMAGE=%s\n' "$ACR_IMAGE" >> "$GITHUB_ENV"
+          printf 'BUILD_TAG=%s\n' "$BUILD_TAG" >> "$GITHUB_ENV"
+
+      - name: 生成配置并部署到服务器
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: root
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: /root/tutor-flow
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          BOOTSTRAP_SUPER_ADMIN_USERNAME: kk
+          BOOTSTRAP_SUPER_ADMIN_PASSWORD: ${{ secrets.BOOTSTRAP_SUPER_ADMIN_PASSWORD }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          CONTENT_CENTER_URL: https://file.ksite.xin
+          KFILE_APP_TOKEN: ${{ secrets.KFILE_APP_TOKEN }}
+          XHS_MCP_ACCOUNT_ID: ${{ secrets.XHS_MCP_ACCOUNT_ID }}
+          XHS_MCP_IMAGE_REPOSITORY: ${{ secrets.XHS_MCP_IMAGE_REPOSITORY }}
+          TUTOR_FLOW_BIND_ADDRESS: ${{ secrets.TUTOR_FLOW_BIND_ADDRESS }}
+          API_PUBLISHED_PORT: ${{ secrets.API_PUBLISHED_PORT }}
+          CONSOLE_PORT: ${{ secrets.CONSOLE_PORT }}
+          LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing SSH_HOST secret}"
+          : "${SSH_USER:?missing SSH_USER}"
+          : "${SSH_KEY:?missing SSH_KEY secret}"
+          : "${DEPLOY_PATH:?missing DEPLOY_PATH}"
+          : "${ACR_IMAGE:?missing ACR_IMAGE}"
+          : "${BUILD_TAG:?missing BUILD_TAG}"
+          : "${ACR_REGISTRY:?ACR_REGISTRY 不能为空}"
+          : "${ACR_USERNAME:?missing ACR_USERNAME secret}"
+          : "${ACR_PASSWORD:?missing ACR_PASSWORD secret}"
+          : "${BOOTSTRAP_SUPER_ADMIN_PASSWORD:?missing BOOTSTRAP_SUPER_ADMIN_PASSWORD secret}"
+          : "${BRAVE_API_KEY:?missing BRAVE_API_KEY secret}"
+          : "${KFILE_APP_TOKEN:?missing KFILE_APP_TOKEN secret}"
+
+          [[ "$BOOTSTRAP_SUPER_ADMIN_PASSWORD" != *$'\n'* && "$BOOTSTRAP_SUPER_ADMIN_PASSWORD" != *$'\r'* ]] || {
+            echo '初始管理员密码不能包含换行'
+            exit 1
+          }
+          [[ "${#BOOTSTRAP_SUPER_ADMIN_PASSWORD}" -ge 5 ]] || {
+            echo '初始管理员密码至少需要 5 位'
+            exit 1
+          }
+
+          SSH_PORT="${SSH_PORT:-22}"
+          REDIS_URL="${REDIS_URL:-redis://host.docker.internal:6379}"
+          XHS_MCP_ACCOUNT_ID="${XHS_MCP_ACCOUNT_ID:-00000000-0000-4000-8000-000000000001}"
+          XHS_MCP_IMAGE_REPOSITORY="${XHS_MCP_IMAGE_REPOSITORY:-xpzouying/xiaohongshu-mcp}"
+          TUTOR_FLOW_BIND_ADDRESS="${TUTOR_FLOW_BIND_ADDRESS:-127.0.0.1}"
+          API_PUBLISHED_PORT="${API_PUBLISHED_PORT:-4000}"
+          CONSOLE_PORT="${CONSOLE_PORT:-3000}"
+          LOG_LEVEL="${LOG_LEVEL:-info}"
+          PULL_REGISTRY="$ACR_REGISTRY"
+          PULL_IMAGE="${PULL_REGISTRY}/${ACR_IMAGE_PATH}"
+          APP_IMAGE="${IMAGE_NAME}:${BUILD_TAG}"
+
+          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo 'DEPLOY_PATH 必须是绝对路径'; exit 1; }
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo 'SSH_HOST 格式不正确'; exit 1; }
+          [[ "$SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9._-]*$ ]] || { echo 'SSH_USER 格式不正确'; exit 1; }
+          [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || { echo 'SSH_PORT 必须是数字'; exit 1; }
+          [[ "$API_PUBLISHED_PORT" =~ ^[0-9]+$ ]] || { echo 'API_PUBLISHED_PORT 必须是数字'; exit 1; }
+          [[ "$CONSOLE_PORT" =~ ^[0-9]+$ ]] || { echo 'CONSOLE_PORT 必须是数字'; exit 1; }
+          [[ "$ACR_REGISTRY" =~ ^[A-Za-z0-9.-]+$ ]] || { echo 'ACR_REGISTRY 格式不正确'; exit 1; }
+          [[ "$PULL_REGISTRY" =~ ^[A-Za-z0-9.-]+$ ]] || { echo 'ACR_REGISTRY 格式不正确'; exit 1; }
+          [[ "$ACR_IMAGE_PATH" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo 'ACR_IMAGE_PATH 格式不正确'; exit 1; }
+          [[ "$ACR_USERNAME" =~ ^[A-Za-z0-9._@-]+$ ]] || { echo 'ACR_USERNAME 格式不正确'; exit 1; }
+          [[ "$XHS_MCP_IMAGE_REPOSITORY" =~ ^[A-Za-z0-9./:_-]+$ ]] || { echo 'XHS_MCP_IMAGE_REPOSITORY 格式不正确'; exit 1; }
+
+          for value in \
+            "$APP_IMAGE" \
+            "$REDIS_URL" \
+            "$BOOTSTRAP_SUPER_ADMIN_USERNAME" \
+            "$BOOTSTRAP_SUPER_ADMIN_PASSWORD" \
+            "$BRAVE_API_KEY" \
+            "$CONTENT_CENTER_URL" \
+            "$KFILE_APP_TOKEN" \
+            "$XHS_MCP_ACCOUNT_ID" \
+            "$XHS_MCP_IMAGE_REPOSITORY" \
+            "$TUTOR_FLOW_BIND_ADDRESS" \
+            "$API_PUBLISHED_PORT" \
+            "$CONSOLE_PORT" \
+            "$LOG_LEVEL"; do
+            [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *"'"* ]] || {
+              echo '部署变量不能包含换行或单引号'
+              exit 1
+            }
+          done
+
+          {
+            printf "APP_IMAGE='%s'\n" "$APP_IMAGE"
+            printf "REDIS_URL='%s'\n" "$REDIS_URL"
+            printf "BOOTSTRAP_SUPER_ADMIN_USERNAME='%s'\n" "$BOOTSTRAP_SUPER_ADMIN_USERNAME"
+            printf "BOOTSTRAP_SUPER_ADMIN_PASSWORD='%s'\n" "$BOOTSTRAP_SUPER_ADMIN_PASSWORD"
+            printf "BRAVE_API_KEY='%s'\n" "$BRAVE_API_KEY"
+            printf "CONTENT_CENTER_URL='%s'\n" "$CONTENT_CENTER_URL"
+            printf "KFILE_APP_TOKEN='%s'\n" "$KFILE_APP_TOKEN"
+            printf "XHS_MCP_ACCOUNT_ID='%s'\n" "$XHS_MCP_ACCOUNT_ID"
+            printf "XHS_MCP_IMAGE_REPOSITORY='%s'\n" "$XHS_MCP_IMAGE_REPOSITORY"
+            printf "TUTOR_FLOW_BIND_ADDRESS='%s'\n" "$TUTOR_FLOW_BIND_ADDRESS"
+            printf "API_PUBLISHED_PORT='%s'\n" "$API_PUBLISHED_PORT"
+            printf "CONSOLE_PORT='%s'\n" "$CONSOLE_PORT"
+            printf "LOG_LEVEL='%s'\n" "$LOG_LEVEL"
+          } > .env
+          chmod 600 .env
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$SSH_PORT" -t rsa,ecdsa,ed25519 "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "${SSH_USER}@${SSH_HOST}" "mkdir -p '$DEPLOY_PATH'"
+
+          scp -i ~/.ssh/deploy_key -P "$SSH_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            docker-compose.yml .env \
+            "${SSH_USER}@${SSH_HOST}:${DEPLOY_PATH}/"
+
+          printf '%s\n' "$ACR_PASSWORD" \
+            | ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" \
+                -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 \
+                -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+                "${SSH_USER}@${SSH_HOST}" \
+                "docker login '$PULL_REGISTRY' -u '$ACR_USERNAME' --password-stdin"
+
+          ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "${SSH_USER}@${SSH_HOST}" \
+            "DEPLOY_PATH='$DEPLOY_PATH' PULL_REGISTRY='$PULL_REGISTRY' PULL_IMAGE='$PULL_IMAGE' BUILD_TAG='$BUILD_TAG' APP_IMAGE='$APP_IMAGE' IMAGE_NAME='$IMAGE_NAME' KEEP_VERSIONS='$KEEP_VERSIONS' bash -s" <<'REMOTE'
+          set -euo pipefail
+          trap 'docker logout "$PULL_REGISTRY" >/dev/null 2>&1 || true' EXIT
+
+          cd "$DEPLOY_PATH"
+          chmod 600 .env
+
+          docker pull "${PULL_IMAGE}:${BUILD_TAG}"
+          docker tag "${PULL_IMAGE}:${BUILD_TAG}" "$APP_IMAGE"
+          docker tag "${PULL_IMAGE}:${BUILD_TAG}" "${IMAGE_NAME}:latest"
+          docker image rm "${PULL_IMAGE}:${BUILD_TAG}" >/dev/null 2>&1 || true
+
+          docker compose -f docker-compose.yml --env-file .env \
+            up -d --no-build --remove-orphans --wait --wait-timeout 180
+
+          docker image prune -f >/dev/null 2>&1 || true
+          docker images "$IMAGE_NAME" --format '{{.Tag}}' \
+            | grep -E '^prod-[0-9]+$' \
+            | sort -t- -k2,2nr \
+            | tail -n +"$((KEEP_VERSIONS + 1))" \
+            | while read -r tag; do
+                [ -n "$tag" ] && docker image rm "${IMAGE_NAME}:${tag}" >/dev/null 2>&1 || true
+              done || true
+
+          docker compose -f docker-compose.yml --env-file .env ps
+          REMOTE
+
+      - name: 清理 Runner 临时密钥与配置
+        if: always()
+        run: |
+          rm -f .env ~/.ssh/deploy_key

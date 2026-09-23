@@ -35,7 +35,7 @@ const usernameSchema = z
   .min(3)
   .max(32)
   .regex(/^[A-Za-z0-9._-]+$/, '用户名只能包含字母、数字、点、下划线和连字符');
-const passwordSchema = z.string().min(10).max(128);
+const passwordSchema = z.string().min(5).max(128);
 
 function sessionCookie(request: FastifyRequest, token: string, maxAge: number): string {
   const secure = request.protocol === 'https' ? '; Secure' : '';

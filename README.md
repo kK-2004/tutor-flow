@@ -41,6 +41,7 @@ docker compose logs -f api worker console
 首次启动可使用 `.env` 中的 `BOOTSTRAP_SUPER_ADMIN_USERNAME` 与
 `BOOTSTRAP_SUPER_ADMIN_PASSWORD` 登录管理台。默认值为 `admin` / `change-me-now-123`，
 仅适合本机首次启动，登录后应立即在系统设置中修改密码；已有超级管理员时不会覆盖密码。
+管理员密码至少 5 位。
 
 后台角色分为 `SUPER_ADMIN` 与 `ADMIN`，两者具有相同业务操作权限。只有
 `SUPER_ADMIN` 可以创建 `ADMIN`，并以随机生成或指定密码的方式重置其密码；

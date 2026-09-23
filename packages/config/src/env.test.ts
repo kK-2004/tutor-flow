@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { apiEnvSchema } from './env-schema.js';
+import { apiEnvSchema, workerEnvSchema } from './env-schema.js';
 import {
   loadApiEnv,
   loadConsoleServerEnv,
@@ -43,6 +43,16 @@ describe('环境 schema 校验', () => {
         SECRET_UNDECLARED_KEY: 'should-fail',
       }),
     ).toThrow();
+  });
+
+  it('生产 Worker 使用 MCP 镜像引用即可启动', () => {
+    const workerEnv = {
+      NODE_ENV: 'production',
+      SQLITE_PATH: './data/tutor-flow.db',
+      REDIS_URL: 'redis://localhost:6379',
+      XHS_MCP_URL: 'http://xiaohongshu-mcp:18060/mcp',
+    };
+    expect(workerEnvSchema.parse(workerEnv).XHS_MCP_URL).toBe(workerEnv.XHS_MCP_URL);
   });
 });
 

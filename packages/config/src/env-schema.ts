@@ -74,30 +74,8 @@ export const workerEnvSchema = z
     XHS_MCP_URL: z.url().optional(),
     XHS_MCP_ACCOUNT_ID: z.uuid().optional(),
     XHS_MCP_AUTH_TOKEN_REF: z.string().min(5).optional(),
-    // 生产发布器必须同时提供不可变版本标识，避免 sidecar 漂移
-    XHS_MCP_COMMIT: z
-      .string()
-      .regex(/^[0-9a-f]{7,40}$/i)
-      .optional(),
-    XHS_MCP_IMAGE_DIGEST: z
-      .string()
-      .regex(/^sha256:[0-9a-f]{64}$/i)
-      .optional(),
   })
-  .strict()
-  .superRefine((value, context) => {
-    if (
-      value.NODE_ENV === 'production' &&
-      value.XHS_MCP_URL !== undefined &&
-      (value.XHS_MCP_COMMIT === undefined || value.XHS_MCP_IMAGE_DIGEST === undefined)
-    ) {
-      context.addIssue({
-        code: 'custom',
-        path: ['XHS_MCP_COMMIT'],
-        message: '生产环境启用发布器时必须固定 MCP commit 与镜像摘要',
-      });
-    }
-  });
+  .strict();
 export type WorkerEnv = z.infer<typeof workerEnvSchema>;
 
 /**

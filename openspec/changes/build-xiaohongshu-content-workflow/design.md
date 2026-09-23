@@ -67,7 +67,7 @@ Research Worker 先生成带语言和意图的 query plan，再调用可替换�
 
 ### 7. 小红书通过隔离的 Publisher Adapter 接入
 
-定义 `checkAuth`、`validate`、`preview`、`publish` 和 `queryStatus` 五个 Publisher Adapter 操作。首选实现用 TypeScript MCP client 调用固定版本和固定镜像摘要的 `xiaohongshu-mcp` sidecar；adapter 之外的领域代码不依赖 MCP 工具名或 DOM 细节。
+定义 `checkAuth`、`validate`、`preview`、`publish` 和 `queryStatus` 五个 Publisher Adapter 操作。首选实现用 TypeScript MCP client 调用部署配置指定的 `xiaohongshu-mcp` 镜像；adapter 之外的领域代码不依赖 MCP 工具名或 DOM 细节。
 
 账号 Cookie、二维码会话和 API 凭据只保存为 Secret Manager/Vault 引用，按发布任务短时挂载到 Publisher Worker。遇到验证码、二次验证、Cookie 失效、异常登录或 selector 失效时立即停止自动尝试并进入 `NEEDS_HUMAN`，绝不实现规避逻辑。
 
@@ -117,7 +117,7 @@ Research Worker 先生成带语言和意图的 query plan，再调用可替换�
 
 ## 风险与权衡
 
-- [小红书页面或 MCP 行为变化导致发布中断] → 固定依赖版本，运行 adapter contract/smoke tests，独立容器部署，selector 失效时熔断并转人工。
+- [小红书页面或 MCP 行为变化导致发布中断] → 固定部署镜像引用，运行 adapter contract/smoke tests，独立容器部署，selector 失效时熔断并转人工。
 - [平台成功但本地未收到响应导致重复发布] → advisory lock、稳定幂等键、回执优先落库和“未知结果先核验”策略；接受只能做到 effectively-once。
 - [BullMQ 不像 Temporal 那样原生保存长流程历史] → 业务状态完全持久化到 SQLite、步骤幂等、outbox 和 recovery scan；达到迁移阈值后替换调度实现。
 - [模型生成无来源事实或被网页 prompt injection 影响] → 网页只作为不可信数据，claim-source 强绑定，发布前验证引用覆盖，未支持事实阻止自动发布。
@@ -140,6 +140,6 @@ Research Worker 先生成带语言和意图的 query plan，再调用可替换�
 ## 待确认事项
 
 - 生产环境最终使用哪一种 Secret Manager；接口按 `secret_ref` 抽象，开发环境可以使用本地加密 secret provider。
-- `xiaohongshu-mcp` 上线时固定的 commit、镜像摘要和已验证平台策略版本，需要在集成测试阶段记录。
+- `xiaohongshu-mcp` 上线时使用的镜像引用和已验证平台策略版本，需要在集成测试阶段记录。
 - 首期封面/配图来自用户上传、模板渲染还是现有素材库；无论来源如何，没有满足策略的媒体时都必须阻止发布。
 - 管理台身份认证由现有网关提供还是项目内接入 OIDC；在确定前，API 仍按“已认证管理员”和独立 scheduler token 两类主体实现授权边界。

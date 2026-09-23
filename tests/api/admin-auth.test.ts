@@ -77,11 +77,19 @@ describe('管理后台认证与权限', () => {
 
   it('SUPER_ADMIN 可以创建 ADMIN 并随机重置密码', async () => {
     const cookie = await login('root', 'root-password-123');
+    const tooShort = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/users',
+      headers: { cookie },
+      payload: { username: 'tiny', password: 'abcd' },
+    });
+    expect(tooShort.statusCode).toBe(400);
+
     const created = await app.inject({
       method: 'POST',
       url: '/api/v1/admin/users',
       headers: { cookie },
-      payload: { username: 'editor', password: 'editor-password-123' },
+      payload: { username: 'editor', password: 'abcde' },
     });
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({ username: 'editor', role: 'ADMIN' });
@@ -111,12 +119,10 @@ describe('管理后台认证与权限', () => {
       headers: { cookie },
       payload: {
         currentPassword: 'operator-password-123',
-        newPassword: 'operator-password-456',
+        newPassword: 'abcde',
       },
     });
     expect(changed.statusCode).toBe(200);
-    await expect(login('operator', 'operator-password-456')).resolves.toContain(
-      'tutor_flow_session=',
-    );
+    await expect(login('operator', 'abcde')).resolves.toContain('tutor_flow_session=');
   });
 });

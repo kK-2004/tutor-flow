@@ -21,6 +21,9 @@ import { adminUsers, platformAccounts, platformPolicies } from './schema/index.j
 /** 单账号部署默认绑定的小红书平台账号 ID。 */
 export const DEFAULT_XHS_ACCOUNT_ID = '00000000-0000-4000-8000-000000000001';
 
+/** 管理员密码允许的最小长度。 */
+export const MIN_ADMIN_PASSWORD_LENGTH = 5;
+
 /** 首期强制人工审核发布的默认开关（小红书走浏览器自动化，保守起步） */
 export const DEFAULT_PUBLISH_GUARDS = {
   /** 是否强制人工批准（true 时 auto 模式也必须经草稿箱） */
@@ -46,6 +49,9 @@ export async function seedDefaultSettings(
     .onConflictDoNothing();
 
   if (bootstrap !== undefined) {
+    if (bootstrap.password.length < MIN_ADMIN_PASSWORD_LENGTH) {
+      throw new Error(`初始管理员密码长度不能少于 ${MIN_ADMIN_PASSWORD_LENGTH} 位`);
+    }
     const existingSuperAdmins = await db
       .select({ id: adminUsers.id })
       .from(adminUsers)

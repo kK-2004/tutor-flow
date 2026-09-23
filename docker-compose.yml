@@ -1,7 +1,8 @@
+# 本地与生产共用此编排；生产部署通过 APP_IMAGE 指定已从 ACR 拉取的镜像标签。
 name: tutor-flow
 
 x-app: &app
-  image: tutor-flow:local
+  image: ${APP_IMAGE:-tutor-flow:local}
   init: true
 
 services:
@@ -118,7 +119,7 @@ services:
     restart: unless-stopped
 
   xiaohongshu-mcp:
-    image: ${XHS_MCP_IMAGE:-xpzouying/xiaohongshu-mcp}
+    image: ${XHS_MCP_IMAGE_REPOSITORY:-xpzouying/xiaohongshu-mcp}
     restart: unless-stopped
     tty: true
     volumes:

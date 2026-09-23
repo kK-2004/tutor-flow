@@ -1916,13 +1916,13 @@ function SettingsView({ user }: { user: AdminUser }) {
                   id="new-admin-password"
                   type="password"
                   autoComplete="new-password"
-                  minLength={10}
+                  minLength={5}
                   value={newPassword}
                   onChange={(event) => setNewPassword(event.target.value)}
                 />
                 <button
                   className="button compact"
-                  disabled={currentPassword === '' || newPassword.length < 10}
+                  disabled={currentPassword === '' || newPassword.length < 5}
                   onClick={changeOwnPassword}
                 >
                   修改我的密码
@@ -1948,7 +1948,7 @@ function SettingsView({ user }: { user: AdminUser }) {
                   <input
                     id="new-admin-initial-password"
                     type="password"
-                    minLength={10}
+                    minLength={5}
                     autoComplete="new-password"
                     value={newAdminPassword}
                     onChange={(event) => setNewAdminPassword(event.target.value)}
@@ -1956,7 +1956,7 @@ function SettingsView({ user }: { user: AdminUser }) {
                   <button
                     className="button compact"
                     disabled={
-                      newAdminUsername.trim().length < 3 || newAdminPassword.length < 10
+                      newAdminUsername.trim().length < 3 || newAdminPassword.length < 5
                     }
                     onClick={createAdmin}
                   >
@@ -1999,7 +1999,7 @@ function SettingsView({ user }: { user: AdminUser }) {
               </button>
               <button
                 className="button primary"
-                disabled={resetMode === 'specified' && resetPassword.length < 10}
+                disabled={resetMode === 'specified' && resetPassword.length < 5}
                 onClick={resetAdminPassword}
               >
                 确认重置
@@ -2030,7 +2030,7 @@ function SettingsView({ user }: { user: AdminUser }) {
                 <input
                   id="specified-reset-password"
                   type="password"
-                  minLength={10}
+                  minLength={5}
                   autoComplete="new-password"
                   value={resetPassword}
                   onChange={(event) => setResetPassword(event.target.value)}

@@ -13,7 +13,7 @@ import path from 'node:path';
 import { loadDotenvIfPresent, resolveDatabasePath } from '@tutor-flow/config/server';
 
 import * as schema from '../schema/index.js';
-import { seedDefaultSettings } from '../seed.js';
+import { MIN_ADMIN_PASSWORD_LENGTH, seedDefaultSettings } from '../seed.js';
 
 // 本地开发：若存在 .env 则加载（不覆盖已有环境变量）
 loadDotenvIfPresent();
@@ -41,6 +41,12 @@ try {
   // 迁移完成后初始化非敏感默认配置（幂等）
   const bootstrapUsername = process.env['BOOTSTRAP_SUPER_ADMIN_USERNAME'];
   const bootstrapPassword = process.env['BOOTSTRAP_SUPER_ADMIN_PASSWORD'];
+  if (
+    bootstrapPassword !== undefined &&
+    bootstrapPassword.length < MIN_ADMIN_PASSWORD_LENGTH
+  ) {
+    throw new Error(`初始管理员密码长度不能少于 ${MIN_ADMIN_PASSWORD_LENGTH} 位`);
+  }
   await seedDefaultSettings(
     db,
     'system:seed',

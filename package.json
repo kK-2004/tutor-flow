@@ -22,7 +22,7 @@
     "dev:console": "pnpm --filter @tutor-flow/console dev",
     "dev:api": "pnpm --filter @tutor-flow/api dev",
     "dev:worker": "pnpm --filter @tutor-flow/worker dev",
-    "db:migrate": "pnpm --filter @tutor-flow/db migrate",
+    "db:migrate": "pnpm --filter @tutor-flow/db... build && pnpm --filter @tutor-flow/db migrate",
     "db:generate": "pnpm --filter @tutor-flow/db generate"
   },
   "devDependencies": {

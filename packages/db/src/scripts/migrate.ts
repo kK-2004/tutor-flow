@@ -1,5 +1,5 @@
 /**
- * 迁移执行脚本：pnpm --filter @tutor-flow/db migrate
+ * 迁移执行脚本：pnpm db:migrate
  *
  * 使用 Drizzle 迁移器按 journal 顺序应用 drizzle/ 下的 SQL 迁移；
  * 每次应用记录在库内迁移表中，天然幂等。

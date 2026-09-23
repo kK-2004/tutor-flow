@@ -49,7 +49,18 @@ export function registerAccountRoutes(
   const { db, env, adapter, secrets } = options;
   const authenticate = requireAuthenticated(env, db);
   const sessionClient = options.mcpCallTool
-    ? createXhsMcpSessionClient(options.mcpCallTool)
+    ? createXhsMcpSessionClient(async (tool, args) => {
+        const startedAt = Date.now();
+        try {
+          return await options.mcpCallTool!(tool, args);
+        } finally {
+          // 不记录二维码、工具响应或 Cookie，只记录操作和耗时。
+          app.log.info(
+            { tool, durationMs: Date.now() - startedAt },
+            '小红书登录调用完成',
+          );
+        }
+      })
     : null;
 
   app.post(

@@ -1,9 +1,8 @@
 /**
  * 事务性发件箱分发器。
  *
- * 周期性地在数据库事务内认领未分发记录（FOR UPDATE SKIP LOCKED，
- * 多实例安全），投递到 BullMQ 后提交事务标记已分发。崩溃窗口下
- * 记录保持未分发，至少一次投递；消费端幂等由步骤处理器保证。
+ * 读取已提交记录，事务外投递到 BullMQ，再标记结果，避免等待 Redis 时占用写锁。
+ * 崩溃窗口采用至少一次投递；发件箱 ID 去重与消费端幂等共同保护重投。
  */
 import {
   claimPendingOutbox,
@@ -33,6 +32,7 @@ export class OutboxDispatcher {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private stopped = false;
+  private inFlight: Promise<number> | null = null;
 
   constructor(db: DbClient, queues: QueueRegistry, options: DispatcherOptions = {}) {
     this.db = db;
@@ -73,62 +73,68 @@ export class OutboxDispatcher {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    // 分发异常由轮询记录，停止时仍需继续关闭队列与数据库。
+    await this.inFlight?.catch(() => undefined);
   }
 
   /** 单轮分发：认领 → 投递 → 标记 */
-  async dispatchOnce(): Promise<number> {
-    return this.db.db.transaction(async (tx) => {
-      const rows = await claimPendingOutbox(tx, {
-        limit: this.batchSize,
-        maxAttempts: this.maxAttempts,
-      });
-      if (rows.length === 0) {
-        return 0;
-      }
-      const dispatched: number[] = [];
-      const failed: number[] = [];
-      for (const row of rows) {
-        const route = extractRoute(row.payload);
-        if (route === null) {
-          // 无路由信息的记录视为已完成使命（防御性处理）
-          dispatched.push(row.id);
-          continue;
-        }
-        try {
-          await this.deliver(route);
-          dispatched.push(row.id);
-        } catch (error) {
-          failed.push(row.id);
-          console.error(
-            `发件箱投递失败（id=${row.id}, event=${row.eventName}）：`,
-            error instanceof Error ? error.message : error,
-          );
-        }
-      }
-      await markOutboxDispatched(tx, dispatched);
-      await markOutboxFailed(tx, failed, '投递到队列失败，将在下一轮重试');
-      return dispatched.length;
+  dispatchOnce(): Promise<number> {
+    this.inFlight ??= this.dispatchBatch().finally(() => {
+      this.inFlight = null;
     });
+    return this.inFlight;
+  }
+
+  private async dispatchBatch(): Promise<number> {
+    const tx = this.db.db;
+    const rows = await claimPendingOutbox(tx, {
+      limit: this.batchSize,
+      maxAttempts: this.maxAttempts,
+    });
+    if (rows.length === 0) {
+      return 0;
+    }
+    const dispatched: number[] = [];
+    const failed: number[] = [];
+    for (const row of rows) {
+      const route = extractRoute(row.payload);
+      if (route === null) {
+        // 无路由信息的记录视为已完成使命（防御性处理）
+        dispatched.push(row.id);
+        continue;
+      }
+      try {
+        await this.deliver(route, row.id);
+        dispatched.push(row.id);
+      } catch (error) {
+        failed.push(row.id);
+        console.error(
+          `发件箱投递失败（id=${row.id}, event=${row.eventName}）：`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    await markOutboxDispatched(tx, dispatched);
+    await markOutboxFailed(tx, failed, '投递到队列失败，将在下一轮重试');
+    return dispatched.length;
   }
 
   /** 按载荷中的路由投递到目标队列 */
-  private async deliver(route: OutboxJobRoute): Promise<void> {
+  private async deliver(route: OutboxJobRoute, outboxId: number): Promise<void> {
     if (route.queue === 'workflow') {
       const target = this.queues.workflow;
-      await target.add(
-        route.name,
-        route.data as never,
-        route.delayMs !== undefined ? { delay: route.delayMs } : undefined,
-      );
+      await target.add(route.name, route.data as never, {
+        jobId: `outbox-${outboxId}`,
+        ...(route.delayMs !== undefined ? { delay: route.delayMs } : {}),
+      });
       return;
     }
     if (route.queue === 'publishing') {
       const target = this.queues.publishing;
-      await target.add(
-        route.name,
-        route.data as never,
-        route.delayMs !== undefined ? { delay: route.delayMs } : undefined,
-      );
+      await target.add(route.name, route.data as never, {
+        jobId: `outbox-${outboxId}`,
+        ...(route.delayMs !== undefined ? { delay: route.delayMs } : {}),
+      });
       return;
     }
     throw new Error(`无法路由的队列：${route.queue}`);

@@ -1,6 +1,7 @@
 /**
  * HTTP 错误映射与请求校验辅助。
  */
+import { XhsSessionError } from '@tutor-flow/integrations';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ZodError, type ZodType } from 'zod';
 
@@ -38,6 +39,14 @@ export function mapHttpError(
   request: FastifyRequest,
   reply: FastifyReply,
 ): void {
+  if (error instanceof XhsSessionError) {
+    request.log.warn({ code: error.code }, '小红书登录上游调用失败');
+    void reply.code(error.code === 'XHS_TIMEOUT' ? 504 : 502).send({
+      error: error.message,
+      code: error.code,
+    });
+    return;
+  }
   if (error instanceof RequestValidationError || error instanceof ZodError) {
     void reply.code(400).send({ error: '请求参数校验失败' });
     return;

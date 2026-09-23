@@ -1,9 +1,8 @@
 /**
- * 发件箱仓储：事务内写入、批认领（SKIP LOCKED）、分发标记。
+ * 发件箱仓储：事务内写入、批量读取、分发标记。
  *
- * 分发器（任务 3.1）在写事务内认领待分发记录，BullMQ 入队成功后
- * 提交事务；崩溃时记录保持未分发，至少一次投递，
- * 幂等由步骤处理器保证。SQLite 单写者保证认领互斥。
+ * 业务事务提交后才能读取待分发记录；队列投递在事务外进行。
+ * 崩溃时记录保持未分发，至少一次投递，发件箱任务 ID 和消费端负责幂等。
  */
 import { and, asc, inArray, isNull, lt, sql } from 'drizzle-orm';
 
@@ -39,7 +38,7 @@ export async function enqueueOutbox(
   return row;
 }
 
-/** 认领待分发记录（在写事务内调用；SQLite 单写者保证互斥） */
+/** 读取待分发记录（不持有写锁；多个分发器由队列任务 ID 去重） */
 export async function claimPendingOutbox(
   db: DbExecutor,
   options: { limit?: number; maxAttempts?: number },

@@ -2126,10 +2126,24 @@ function XhsLoginModal({
   const [status, setStatus] = useState('等待扫码');
   const [loggedInUser, setLoggedInUser] = useState('');
   useEffect(() => {
+    setLoggedInUser('');
+    setStatus('等待扫码');
     if (value === undefined || error !== '') return;
+    if (value.alreadyLoggedIn) {
+      setLoggedInUser('小红书账号');
+      setStatus('登录成功');
+      onComplete();
+      return;
+    }
+    const expiresAt = Date.now() + value.expiresInSeconds * 1_000;
     let active = true;
     let timer: number | undefined;
     const check = async () => {
+      if (Date.now() >= expiresAt) {
+        setStatus('二维码已过期，请刷新二维码；若已确认登录，刷新将重新核验登录状态');
+        return;
+      }
+      setStatus('正在检查登录状态，请在手机端完成确认…');
       try {
         const result = await api<{ loggedIn: boolean; username?: string }>(
           '/api/v1/xiaohongshu/session/check',
@@ -2191,7 +2205,8 @@ function XhsLoginModal({
             />
             <strong>请使用小红书 App 扫码登录</strong>
             <span className="muted small">
-              二维码约 4 分钟后失效，请在手机端完成确认。
+              二维码约 {Math.ceil((value.expiresInSeconds ?? 240) / 60)}{' '}
+              分钟后失效，请在手机端完成确认。
             </span>
           </>
         ) : null}

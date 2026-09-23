@@ -20,6 +20,8 @@ export interface DbClientOptions {
 }
 
 export interface DbClient {
+  /** 连接初始化完成后才能开始处理业务请求。 */
+  ready: Promise<void>;
   db: ReturnType<typeof createDrizzle>;
   /** 底层 libsql 客户端 */
   client: Client;
@@ -42,12 +44,15 @@ export function createDb(options: DbClientOptions): DbClient {
       mkdirSync(dir, { recursive: true });
     }
   }
-  const client = createClient({ url });
-  // 启用外键约束（SQLite 默认关闭）
-  void client.execute('PRAGMA foreign_keys = ON;');
+  const client = createClient({ url, timeout: 1_000 });
+  // WAL 允许读写并行；驱动 timeout 会应用到连接池后续创建的连接。
+  const ready = client.executeMultiple(
+    'PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;',
+  );
   const db = createDrizzle(client);
   return {
     db,
+    ready,
     client,
     async close(): Promise<void> {
       client.close();

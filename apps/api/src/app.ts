@@ -53,6 +53,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<AppHandle
       path: resolveDatabasePath(env.SQLITE_PATH),
       applicationName: 'tutor-flow-api',
     });
+  await db.ready;
   const engine = createWorkflowEngine(db);
 
   const app = Fastify({

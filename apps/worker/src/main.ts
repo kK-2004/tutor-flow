@@ -43,6 +43,8 @@ const db = createDb({
   applicationName: 'tutor-flow-worker',
 });
 
+await db.ready;
+
 // 工作流引擎：检查点推进、失败处置、恢复扫描
 const engine = createWorkflowEngine(db);
 

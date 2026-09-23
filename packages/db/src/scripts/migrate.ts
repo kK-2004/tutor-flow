@@ -31,8 +31,8 @@ const dir = path.dirname(databasePath);
 if (dir !== '.' && dir !== '') {
   mkdirSync(dir, { recursive: true });
 }
-const client = createClient({ url: `file:${databasePath}` });
-await client.execute('PRAGMA foreign_keys = ON;');
+const client = createClient({ url: `file:${databasePath}`, timeout: 1_000 });
+await client.executeMultiple('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 const db = drizzle(client, { schema, casing: 'snake_case' });
 
 try {

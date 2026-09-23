@@ -51,6 +51,20 @@ export interface XhsMcpSessionClient {
   logout(): Promise<void>;
 }
 
+/** 登录链路错误只对外提供安全提示，不透传上游响应或凭据。 */
+export class XhsSessionError extends Error {
+  constructor(readonly code: 'XHS_TIMEOUT' | 'XHS_UNAVAILABLE' | 'XHS_CONTRACT_ERROR') {
+    super(
+      code === 'XHS_TIMEOUT'
+        ? '小红书登录服务响应超时，请稍后重试；已扫码时请先在手机端完成确认'
+        : code === 'XHS_CONTRACT_ERROR'
+          ? '小红书登录服务响应格式不兼容，请检查 MCP 版本'
+          : '小红书登录服务暂时不可用，请稍后重试',
+    );
+    this.name = 'XhsSessionError';
+  }
+}
+
 interface McpContentItem {
   type?: unknown;
   text?: unknown;
@@ -82,7 +96,7 @@ function readSessionText(content: McpContentItem[], tool: string): string {
 
 /** 创建小红书 MCP 登录会话客户端。 */
 export function createXhsMcpSessionClient(callTool: McpToolCaller): XhsMcpSessionClient {
-  return {
+  const client: XhsMcpSessionClient = {
     async checkLoginStatus() {
       const content = readToolResult(
         await callTool('check_login_status', {}),
@@ -134,6 +148,33 @@ export function createXhsMcpSessionClient(callTool: McpToolCaller): XhsMcpSessio
       );
       readSessionText(content, 'delete_cookies');
     },
+  };
+  // 多个页面同时轮询时共享在途请求，避免重复启动上游浏览器；不缓存登录结果。
+  function singleFlight<T>(operation: () => Promise<T>): () => Promise<T> {
+    let pending: Promise<T> | undefined;
+    return () => {
+      pending ??= operation()
+        .catch((error: unknown) => {
+          if (error instanceof PublisherError && error.code === 'SELECTOR') {
+            throw new XhsSessionError('XHS_CONTRACT_ERROR');
+          }
+          const detail = error instanceof Error ? `${error.name} ${error.message}` : '';
+          throw new XhsSessionError(
+            /timeout|timed out|aborted|超时/i.test(detail)
+              ? 'XHS_TIMEOUT'
+              : 'XHS_UNAVAILABLE',
+          );
+        })
+        .finally(() => {
+          pending = undefined;
+        });
+      return pending;
+    };
+  }
+  return {
+    checkLoginStatus: singleFlight(() => client.checkLoginStatus()),
+    getLoginQrcode: singleFlight(() => client.getLoginQrcode()),
+    logout: () => client.logout(),
   };
 }
 

@@ -31,4 +31,4 @@ RUN pnpm -r --workspace-concurrency=1 build
 ENV SQLITE_PATH=/data/tutor-flow.db
 EXPOSE 3000 4000 4100
 
-CMD ["pnpm", "--filter", "@tutor-flow/api", "start"]
+CMD ["bash", "scripts/start-app.sh"]

@@ -1,0 +1,8 @@
+{
+  "project": "xiaohongshu-mcp",
+  "adapterContract": "docs/xiaohongshu-mcp-contract.md#v1",
+  "commit": "${XHS_MCP_COMMIT}",
+  "imageDigest": "${XHS_MCP_IMAGE_DIGEST}",
+  "policyVersion": "xhs-policy@2026.09",
+  "runtimeRule": "生产环境由配置校验强制要求不可变 commit 与镜像摘要；开发环境可使用本地 sidecar。"
+}

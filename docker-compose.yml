@@ -1,0 +1,136 @@
+name: tutor-flow
+
+x-app: &app
+  image: tutor-flow:local
+  init: true
+
+services:
+  migrate:
+    <<: *app
+    command: ['pnpm', '--filter', '@tutor-flow/db', 'migrate']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SQLITE_PATH: /data/tutor-flow.db
+      BOOTSTRAP_SUPER_ADMIN_USERNAME: ${BOOTSTRAP_SUPER_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_SUPER_ADMIN_PASSWORD: ${BOOTSTRAP_SUPER_ADMIN_PASSWORD:-change-me-now-123}
+    volumes:
+      - tutor-flow-data:/data
+    restart: 'no'
+
+  api:
+    <<: *app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ['pnpm', '--filter', '@tutor-flow/api', 'start']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: 4000
+      SQLITE_PATH: /data/tutor-flow.db
+      REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379}
+      XHS_MCP_URL: http://xiaohongshu-mcp:18060/mcp
+      XHS_MCP_ACCOUNT_ID: ${XHS_MCP_ACCOUNT_ID:-00000000-0000-4000-8000-000000000001}
+    ports:
+      - '${TUTOR_FLOW_BIND_ADDRESS:-127.0.0.1}:${API_PUBLISHED_PORT:-4000}:4000'
+    volumes:
+      - tutor-flow-data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      xiaohongshu-mcp:
+        condition: service_started
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    command: ['pnpm', '--filter', '@tutor-flow/worker', 'start']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SQLITE_PATH: /data/tutor-flow.db
+      REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379}
+      XHS_MCP_URL: http://xiaohongshu-mcp:18060/mcp
+      XHS_MCP_ACCOUNT_ID: ${XHS_MCP_ACCOUNT_ID:-00000000-0000-4000-8000-000000000001}
+    volumes:
+      - tutor-flow-data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      xiaohongshu-mcp:
+        condition: service_started
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4100/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  console:
+    <<: *app
+    command: ['pnpm', '--filter', '@tutor-flow/console', 'start']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      CONSOLE_API_BASE_URL: http://api:4000
+    ports:
+      - '${TUTOR_FLOW_BIND_ADDRESS:-127.0.0.1}:${CONSOLE_PORT:-3000}:3000'
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  xiaohongshu-mcp:
+    image: ${XHS_MCP_IMAGE:-xpzouying/xiaohongshu-mcp}
+    restart: unless-stopped
+    tty: true
+    volumes:
+      - ./mcp/xhs/data:/app/data
+      - ./mcp/xhs/images:/app/images
+    environment:
+      COOKIES_PATH: /app/data/cookies.json
+      HOME: /app/data/home
+      XDG_CONFIG_HOME: /app/data/config
+      AUTH_TOKEN: ${XHS_MCP_AUTH_TOKEN:-}
+    ports:
+      - '127.0.0.1:${XHS_MCP_PORT:-18060}:18060'
+
+volumes:
+  tutor-flow-data:

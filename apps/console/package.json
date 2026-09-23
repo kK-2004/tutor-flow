@@ -1,0 +1,27 @@
+{
+  "name": "@tutor-flow/console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "管理后台（Next.js）：概览、工作流、草稿箱、发布管理与系统设置",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "^6.7.2",
+    "@tutor-flow/domain": "workspace:*",
+    "@tutor-flow/ui": "workspace:*",
+    "next": "^16.3.5",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.3"
+  }
+}

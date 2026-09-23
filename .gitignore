@@ -1,0 +1,29 @@
+# 依赖与构建产物
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+
+# 环境变量与密钥：只提交示例文件
+.env
+.env.local
+.env.*.local
+
+# 小红书 MCP 持久化登录态与临时图片
+/mcp/xhs/data/
+/mcp/xhs/images/
+/data/
+
+# 测试与缓存
+coverage/
+.vitest-cache/
+.turbo/
+.eslintcache
+
+# 本地协作工具记忆
+.workbuddy/
+
+# 系统文件
+.DS_Store
+*.log

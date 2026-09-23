@@ -1,0 +1,12 @@
+# 依赖与构建产物不做格式化
+node_modules
+dist
+.next
+coverage
+pnpm-lock.yaml
+
+# Next.js 自动生成的类型声明
+apps/console/next-env.d.ts
+
+# 离线原型是验收参考，保持原样
+docs/原型.html

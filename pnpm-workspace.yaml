@@ -1,0 +1,4 @@
+# pnpm 工作空间：应用与共享包全部纳入统一依赖管理
+packages:
+  - apps/*
+  - packages/*

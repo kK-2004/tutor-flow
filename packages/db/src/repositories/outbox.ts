@@ -1,0 +1,87 @@
+/**
+ * 发件箱仓储：事务内写入、批认领（SKIP LOCKED）、分发标记。
+ *
+ * 分发器（任务 3.1）在写事务内认领待分发记录，BullMQ 入队成功后
+ * 提交事务；崩溃时记录保持未分发，至少一次投递，
+ * 幂等由步骤处理器保证。SQLite 单写者保证认领互斥。
+ */
+import { and, asc, inArray, isNull, lt, sql } from 'drizzle-orm';
+
+import { redactDeep } from '../lib/redact.js';
+import type { DbExecutor } from '../lib/tx.js';
+import { outboxRecords } from '../schema/index.js';
+
+type OutboxRow = typeof outboxRecords.$inferSelect;
+
+/** 事务内追加发件箱记录（载荷自动脱敏） */
+export async function enqueueOutbox(
+  db: DbExecutor,
+  record: {
+    eventName: string;
+    aggregateType: string;
+    aggregateId: string;
+    payload: unknown;
+  },
+): Promise<OutboxRow> {
+  const inserted = await db
+    .insert(outboxRecords)
+    .values({
+      eventName: record.eventName,
+      aggregateType: record.aggregateType,
+      aggregateId: record.aggregateId,
+      payload: redactDeep(record.payload) as object,
+    })
+    .returning();
+  const row = inserted[0];
+  if (row === undefined) {
+    throw new Error('发件箱写入失败');
+  }
+  return row;
+}
+
+/** 认领待分发记录（在写事务内调用；SQLite 单写者保证互斥） */
+export async function claimPendingOutbox(
+  db: DbExecutor,
+  options: { limit?: number; maxAttempts?: number },
+): Promise<OutboxRow[]> {
+  return db
+    .select()
+    .from(outboxRecords)
+    .where(
+      and(
+        isNull(outboxRecords.dispatchedAt),
+        lt(outboxRecords.attempts, options.maxAttempts ?? 20),
+      ),
+    )
+    .orderBy(asc(outboxRecords.id))
+    .limit(options.limit ?? 50);
+}
+
+/** 标记已分发 */
+export async function markOutboxDispatched(db: DbExecutor, ids: number[]): Promise<void> {
+  if (ids.length === 0) {
+    return;
+  }
+  await db
+    .update(outboxRecords)
+    .set({ dispatchedAt: new Date() })
+    .where(inArray(outboxRecords.id, ids));
+}
+
+/** 记录分发失败（累加尝试次数，超过上限由恢复扫描处理） */
+export async function markOutboxFailed(
+  db: DbExecutor,
+  ids: number[],
+  error: string,
+): Promise<void> {
+  if (ids.length === 0) {
+    return;
+  }
+  await db
+    .update(outboxRecords)
+    .set({
+      attempts: sql`${outboxRecords.attempts} + 1`,
+      lastError: error.slice(0, 500),
+    })
+    .where(inArray(outboxRecords.id, ids));
+}

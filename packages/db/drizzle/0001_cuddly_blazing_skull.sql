@@ -1,0 +1,1 @@
+ALTER TABLE `workflow_run` ADD `selected_direction_id` text;

@@ -1,0 +1,7709 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>内容工作台 · 离线交互原型</title>
+
+<!--
+内容工作台单文件离线原型
+
+实现要点：
+1. 页面：
+   - 概览
+   - 工作流
+   - 任务详情
+   - 草稿箱
+   - 草稿编辑
+   - 研究资料
+   - 发布管理
+   - 系统设置
+   - 新建任务模态
+
+2. 业务：
+   - 自动 / 人工选择内容方向
+   - 自动发布 / 人工审核
+   - 人工审核任务生成平台内容后进入草稿箱
+   - 草稿可编辑和本地保存
+   - 审核通过后从草稿箱移除并进入发布队列
+
+3. 存储：
+   - 任务
+   - 草稿
+   - 发布记录
+   - 系统设置
+   - 主题
+   均写入 localStorage。
+   file:// 下如果浏览器禁用 localStorage，会退化到内存存储。
+
+4. 主题：
+   - 浅色
+   - 深色
+   - 跟随系统
+   - 监听 prefers-color-scheme
+   - 主色：#3b6f9e
+
+5. 图标：
+   - Font Awesome Free 6 Solid WOFF2 字体子集
+   - 使用 data: URL 内嵌
+   - 不加载 CDN
+   - 不使用 Emoji
+   - 不使用内联 SVG
+
+6. 实时进度：
+   - 离线版本通过 setTimeout 模拟 SSE
+   - 生产环境替换为：
+     EventSource('/api/v1/runs/:id/events/stream')
+
+7. 草稿编辑：
+   - 使用 contenteditable
+   - 原型工具栏支持粗体、斜体、标题、列表和引用
+   - 生产环境建议换成成熟编辑器并增加 HTML Sanitizer
+
+快速测试：
+
+A. 主题
+   点击右上角“浅色 / 深色 / 自动”。
+   刷新浏览器，验证主题记忆。
+
+B. 人工审核
+   点击“新建任务”
+   → 选择“人工审核”
+   → 创建任务
+   → 等待模拟工作流完成
+   → 草稿自动出现在“草稿箱”。
+
+C. 人工选择方向
+   新建任务
+   → 选择“人工选择”
+   → 工作流执行到选择方向时暂停
+   → 在任务详情选择一个方向
+   → 继续执行。
+
+D. 草稿
+   草稿箱支持：
+   - 搜索
+   - 按平台筛选
+   - 审核编辑
+   - 自动保存
+   - 手动保存
+
+E. 审核与发布
+   草稿编辑
+   → “审核通过并发布”
+   → 草稿移出草稿箱
+   → 发布管理生成等待发布任务
+   → 点击“模拟处理队列”。
+
+F. Nacos / curl
+   系统设置
+   → 外部调度接口
+   → “模拟 POST 调用”
+   模拟：
+   POST /api/v1/runs
+
+生产后端接入占位：
+
+API：
+POST /api/v1/runs
+GET  /api/v1/runs/:id
+GET  /api/v1/runs/:id/events/stream
+
+数据：
+SQLite + Drizzle ORM
+
+研究：
+Brave Search
+Brave LLM Context
+
+内容：
+LLM Provider
+Vercel AI SDK
+
+发布：
+TypeScript MCP Client
+    ↓
+PublisherAdapter
+    ↓
+小红书 / 知乎 / 微信公众号 MCP
+-->
+
+<style>
+/* =========================================================
+   Font Awesome Free 6 · 离线字体子集
+   ========================================================= */
+
+@font-face{
+  font-family:FAOffline;
+  font-style:normal;
+  font-weight:900;
+  font-display:block;
+  src:url(data:font/woff2;base64,d09GMgABAAAAABRQAAoAAAAALyAAABQFAwcFAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAAgxzK0XoBNgIkA4FWy3AEIAWDGAcgG20uERW0BgodibGx7MbPjAsvHYKwCJtpU5cejJBk1o/f33fu+wvP0nUbmORkRbWNYFRom2BFOG2CZlb0n8e5+nNfmrzoi7VJCxTSFiiMEhgoMJY1VsQ65p01zf75JnzzrjlfV6xfzLti8lu/d1pKW6wrzW9XVkqT5lbj6/6W5dndqygV4A7Q0aQDlsCDoSEsAAbAABic/9NZtpa9dAjlBajbXFGFqCw8f75kaWZkS7OAdAQzXl2eZTsb+ZCqJGUqIuywTEdUlElFVdEEnm34IQ1lQfA8z7V++3+s1UNnsFqbSxG9uwwN7i8q2+uAnqbTNUIfUEmqHEAs8YSvcEIjoMFYh581yhKvHuEZKcmohc/rr9r7nwDUHhIBqPrLwtVQwtPRiqFzbI2rZJmeav2u5CMM+nCHz+Uua2zM5mzDDuzK3uzHoRzFSZzGmZzNRVzB1VzDndzPgzzMK7zBW7wr5mIlXuInAZIrzbIsJ3IhH09+T/L0+uz63Pbq+Pr7/w9cpdIs4XtOIqdyxpUXXn7nKjX93/H/kVuwo+ibPumFhO7pik5pn3ZpnRZonuZoknqpm7qolaqokioon3Iom7LIgWxJf+7Ea+JV8RtxvdgpThTHidrm/63EWm2F5nVGUZ9RhJ93RHC6L9ECzSNWoBUMRApGyeViQrReNgwmEmy8Xit9zkh46I4jEbKGpgkRjHnS8szT9k2NUhO9eshAt8UiaiHCLA7ABuwDfF67eHcYu/jC3QLBRVsYfIMel0zGaASYa4zYJ/rAqW7tv5P7OZHYUCPv2WHuaiwPCybLTJCP84AQFZH1bbr8Y7Czj+7ahp335+pUVtRpK6mqlJsxfCY+9rSuVx3180JcAKLOTtP2W2NFiDv5Py8riJRN5y33Bf3vs4uqFoAx18BL7kNNYUjhYVzlslyplJlR8OGqV/VSVYUb8HEB+mnl/ALg1BN7KbpJ1Ss1Tbcs/YrJx6esPGUssFOILX5fLfmp72c1h8/d/+Ymv3QY17Qrq4SBqD7v++VyjCEoMQcPfJA2AzWhwkUPKlgNUG7SVuKMZE9dTIm0E5ZPFN/Gg21LhccouBuPgpUOy6SMh9jrVpPF7eZgr+cRhfZeSsmhTkr1lHmtlCdJDaE802oTT1CXvYaIWlRHP0BBLsaUU8zIR4y5kz61LowFxDS6S9O6YIFIn5vc9nR2Pp082oWmpezxtj8TYHgjMupGXDWVeTcBLudD5FFpYgL5FPkVebVN9MlXcrf1nXc7dd80Wq2iZwCD2W3Ra9RCHbtGKTnnFOCXpPqcK1c4BkgYOYuJwz0zbokirCCtSnqYi1YXxjGwxQl686rQjBz+Sj5oKrjy/LellzL6EsaW6Bmuybqpi+lp3szY2SDIiYyZz05v6ZYma7zpjWtWlZ7Z8KWlt4IgvzT7r0YFoY+YlmWO6MJzVcc2Mp6jzQopk5HErOZ4GcN2VNe19aqFFuozi2fWdvBupupIzRqp0rW0B8vWUhDGPEwET4EtELWY3ORM2lUdZkbG429JmJtdDoawG3PmyD8hb9R9YXgnsiBg1KJS+ew88oDVZ8HrxLvow7yYxRPD88XMx4qxAEyGdixhFvDLPJ6zaC4nHa0ZHeokb0u0uZgmtrYS4+9BkPeh4yozA2l5BDZTuE7YeYVE5mHG0lQTWvYiX7cnmmh0U1jBo6p6htA8yxmq+mhgiaRFbp9Lp5YW+D0aybMXsARrcRzOwnZcAPhTSof7O5VuzDxZihNZhuoIMGCKIxNilCwjVMg0/dkUPAgn0EtkshQq6JWU6IjUKGFWRCSiUFTN6kwvrv23nupDa4ok1Or1cmmoXc3emnzI5K/nJSRGVlFKlK0CV9JfwQA7AQyUCuc/wCsqlUDGPrJLAlW45w1PeJhg48SX8EzMEjDezz32Y2o2qKnY57o0ODT1M/nwHSel2w9kN0jPU3j05KDDtCaUxWKlFxyN32wm1mwIHUC3ptOiBtBocsZHUotWem5XqWAY05QRuRM8+k3TROsG5coP3GlWqjqd4Q7zfUpUQoE58xheg40hrMSx2IBzAV/hufg1ASmV5OQI+SrjYc7B8rbqNLaTtl+Qt3zhlVg9wXzsr7i511qKiAPqtKlioTv8zcn3FtHzpSGHAcU1i7wvjZHqJ+fDmIPv3miL3qX74KKCMwEargDB8NgBJT5WIjIMtD0JAwxTtcm67rGgJMxtoiTLOFEh5Cek/+4Fgde/vt91vc6ftUx/RjfEqaZ20/qbjhjt7SXq7R0lkKmHqOtCMs3cdLrFdfvX9w+2lfdvzTpFGPoFw7BvD1HfRRyud24gsISDS41/LLsRbt0wH9G82mww8uzQPJLo7z8pCoiCTpu+LCzR12n2CUssiN4eewFgAEAJpShgQsFnTO4ETNk/StVP0kyFRWSJbJQv0CqRlEaLO22XPrNXgPQZiZHEimIIxCQ44KgAyoxSbVVrOQoLb7mlpvW3LBbNv/lmshiGJYytKpGnnMjrcOGF1do8SYCboJ0Acnq5OIP+ArUEVjOIXWTJa8mSk0oGso9HvSlJWkCk3+1VX1krTTlzNS543Xnl/lB3B59VEXKzg8e67vLlwRPCkqJRgt1wKR3bRo30e77qy+giiVVvTrn5ALfp7U1JVp4cjD1Bb89ZvkGW6K3F9xwOSIcTmFaHz/f4BKWMREuBLqV1lgCnzFWA2/ZHbmGqJKYS7JhDaMSEBnsQuZCgdhackoR+r/gooDewNMVoqLaMRKzqctR3CMrJJ24TPtfRhDp2fwOkeVNMyppi29VMZztP86piCOZrAD/jPeyQB/sRfddlF3Z+s5gmrurNrwVSt9NtswOoiWHsh7MA0jf0d1EYLJqSRRy5McvouOMZZ4uYkGHIkzRZlOrsFPOvi6LVY80uudCQZSMMK4NNc06PmeXm7AtANu8g/GcYms4ks1SqeeJrWr4woDGJmhSG5RLRPdPsq1R8cCFFBdtLUOrWDUtM041BYfDYw1fHmK4ZkLrvdttMpiY8DGAcvMd8C35uIJO4F2uuERdwzudDa4Tm33XdDDvHhGaS/zB5jWZC0fkhqEl+Zz6b9amszWapMSNlQSNgh1D7dTY9wXVtilBcWqsmIq3wn+4PFnxaHxcY1duq5I6O4Aic6FNb0leSYQJg1tW1AfCwkUtQjiFRALrMqGRjowjOp0sjF4feRW66+I0e2oZ/6tLbIuupwbxGOv5V8F/tq4f1kUkXy/WHvZpCRkTfZl5sPQNoMbR39hAD/QAmejCIFWoNjsDp2IBdwFCWV+wcjErmaqNkOTqweZpQoshjdSqZSoXtXKPKgrMF5gAH6nXD1SRSvLoMdqpnYsLLyVZTknRdulf68YqX6sVX1EslqXFeNWdk1dFh+PmFh9c8x3UNw3UdT/vDeHK4ZOlZvXPlAVFyZN83UmuKVZ2bzqPN09ueVnfOb5UGBkoZlhwBfYBo/ZRbHZlLTTs2ke1URmReczn1Lmpmd/tKE3F2K6w5Aijdt2Hx89+ILEaR4GTsxqWAH4AEzcYUzJWFalBeAe9F2NIyU+kTJZgGXDwT2fbGtg7husFHbNBZg9qOR2WHLKDgMGsubwKfN2z02qZp9562oa843jEqHzFydxCstq1mYWizdBbXTDcc02E+H1L2eQHqvtP9F1OoiR7A92v7OI/t9gmIHSlfm4yMAi0UDN2+i1zXSay7bJ0+EhAFod++0tdVY2zNObrthwCD1/0D2013YjUutR12dNyIqQ0D6G0q60U8hgra1ITnaE/EzNJhR1N7AwJsqQFoYsW1tX4w1EGfEztw0T536XBgMKaqpmWwQl8xCMO9hSgq5BhziTNmGKal0kAmM7x0sTy6/v9b0bwjvYRrNy3feOmHe7+7dHbmaCZnBki1TFNnkkouYzmtXsrvDcOg2Fcgl6Pu379syYrE+/vX+fP1LRMh1jxqLe3F6jZ/gnQgqrpEJVFaa41DZZyQwyzNvD+X0T0VBwq4nXLTveYxNCe/k7PijDut1b1k/w3N7VSPgmiswvT3jdY5vZhU+wfwrMAyhEnUIrk4KclOrPJcrWqO+0f6Pa8unzG3YXPQ9zx/MLsXam5j+K/2nIk6cpPchk0aiKIBynYAEtC5DwIsxYGAL+1F2NKl4yy3ipKTFmYQ6PLUJHTqXqlVfeBUl2PYDijX/4CJMqbVUTgdWwF/hfLWrX2FTa8onyhnoSvdNKfpOkAoHULXSWGizcExqwGhYzqGfn+FBrDt7w2W42ygBv815Q6iUZKL4UJ5hfhc+k4bKCqX08rtTah5xyYOxvyeNPKemrhcDcIGbCevlkP+RKLokDgC8neC+zoBli6B/BKU7Us+yFL6IYLYCQtoOCPp3cREOIWtr/uroa10aSMGUs1zwfjJ9Ecs08ikkqJY+dFjNO2004BVrBFvlHR+S8NGkh5qIztJZyDnU4tddKo99dTabuOkxEqTXGjXZUuxpj03aSe8xSOnJYQ1IY3mySX0nRxRV46slbhj66fm7A3VO4luBVCc8XojNSNofWhrSYobER3Nzkt69rEcsO7/uw8wRj/UsC01dmqSqk5qIp0UKDbVKI6DGlUKnsGsh2qi7X19gE/UkmW+XXBFmbSjx2WkReMtMPNkLmV6elbJCpVPNU0zZ3vWo6G5fMCss/a8S3giu7DFqWWtyKt6elp1LntDMdp2/zmPG81NFgoXO7gsW/8gf0EBWYGQ6TxKL13EIMZVgqNmDYiZVqEFlNZ+JQ8hcMorL9LSVNuRxjb5pGYrTeebAJzEv0Eoe6MW4IfFAkt/pnVBtk2Z/Eke/Vf+4CwNJTgdF4gIArTKusx8zpX1GZKsQJQVhDITiIt1ni1PHp6+30nlithfUW/nLLtTzUjymjWylFF3ZhlX1dNOU7laOV/lnvrLerEgLBTCQCEnt123v79cDhHXRVF6aNBbrF6ttdsT9B4JeuLOSrHoie3FnEpkbrIb+9xhrsBMyu8HO8Qqabrz4z8b+ru2TQ+KRP3Fifby5RpVlk3hHDaOQb4wojPJ1HRq1iHzH+J+P7HVmq6TxMbxYryunWLqjABJCzTnsCgxCBAq+NRO82lTYuNSvDcxzuk1nkC3WLL29evLqwHRXnvkjjuE0dyGDXOdC5FS2UiNMWqCc6wz5Xz/hwxv87F5s2ds44p9ueR7xUn8JAaeex9j9JMzKeASr7VmdNCYeuXARFuXb4SjVxyWSJYQFx3oZH3K3KRquvmrU1xyqOU5dK+R7dS3Va7Ez22u5U5QMncZhqZ+b4nm+zpBMwACfTm7wyKXSYZNihoQ0RtAkqLqAaBiKbYGpfs/bhPuYe1PrRipwevpQZfrNRql8wu0y83HF1S7sayE8aW8ZmIhG5BqI3AYBWxFfIL7B3dGJh/inNedww9a51r2oqxGhU5KaSfNMUv4b/jCYjm6QwhxpCSEKYd2d273LWb4dDyghCsT2L2MxTgIR+FkadIDqvimARvrTMC2u7FgrsYdCl/9Z0I6vzXSOjYI4gPo3F2/Yhrd9yywKH1InVSrPa/7LGBwuv+gl+hGLMNZjCAOWiNlJNELhbSpEjfuki6mviPY01YgqW90V3TbCpElXv9cIH/vMWXDtExFzjhDS2bmi8Xh/oYQxAL1IkdRjNH46hJfaVa36ytyN8V3S71BHXvZ+1pbCPFi64ripAEjIczRZct/kUFaHH6RisA6r26hlYTVBXdDzubVEi3cRWmuVpJRWZZzY3ULRPMdlapGuuRSdlo3LtWF0HU+lqlO8/6ZkMXvskJYJlXSST34jmNkz11Tv2mN0FH3yEjMuoPWAmQ2zHgifxMjmMVRAXnrHS8ghHF+3PABuPwGToMLn4fLb72M85qpuS6mM0UD7aw5pukn24qXkX+EJKU/VTeIhzLN4sFFy3asF67iBQ6+StFWaYpCtqRQ6nBMv+JkOzhcWIPRQDLb2brJcSxrNc3voaXMZvBtBk6M5OiTak3gbb9MrF6087Af5yYtYM14ETnKgnHQXmH7QcZCA9MZdVsOT7yd5f8HoHI+RX7SBjlr2RMsWVrGQTIMGN+ay9jLiAfOXx8QGJ5GgJNDAQyrtYjH+VSU5d7ef5Vz2Y6iJcPeVy6pXCtEpf6e/mLuiFwxfQylqKBxldygVIqHUWTLnKt5Jmc0uphnLMMglUfMdj6pyTLTOCdOJX8e12ZjsjwnG31GZBhWhnc+pGVkBkiIuvexiH4CH0swB9CUC+Mq5ANRDffA65KtBNy42ppwzaw1hrUW5v8J2NP/Irw/T6IVD0/eDA19CWWvegK6T9c3cdvmmwjvN3m04sn5OceZ++mcZK/6YAABEpdx0XfPXfl6e9XrqsEAAI++b/vniMfuvtb9HvsY/QqAilqtBLzx6rO0xl6Hs/7zbCt0ClALDksAhgxQzwGliNJmxXyWYETEcDDmScQSpKGF1KrGkm6HoftuBFEjv/u2jL7DUniNEZEidALu26ro6f6f0sjomEjviHeFd4o/8yN8O9fgGVpNn6B76T32BfZvabH0m0w82isr8lXytfLzSl7ZqfyIm/xcfit/TN2r3q8+oZ2lvaN/Tf+JcY7xQ7NoXmDp1lXW7aJf7BV/sfezH3b6nSude91amXqK90HvNf9MfyGbzV4OAlAz+5Bjfna0LcdpkEAZLa1ToFxAGFcrLmDQsfkCCWvQyM00vEDGRtzxSSlYQh4OwB40cDHOwTZswVachwgj2IBRRJjDHuymb4X9cCE24Vy1d6VglS0Rpro653QgcY4vt9mJbdhI3twDOEvHTctQC03j6qTmnHPItg1FZKimampyPDSmYjWTnQk1xmEkAa8XvmCow2cRXSc92jkbzkzd4WWX7r+EHwAAAA==) format("woff2");
+}
+
+.fa{
+  font-family:FAOffline;
+  font-style:normal;
+  font-weight:900;
+  display:inline-block;
+  line-height:1;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* 图标 Unicode */
+.i-grid:before{content:"\f009"}
+.i-run:before{content:"\f0ae"}
+.i-draft:before{content:"\f31c"}
+.i-search:before{content:"\f002"}
+.i-publish:before{content:"\f093"}
+.i-set:before{content:"\f013"}
+.i-plus:before{content:"\2b"}
+.i-sun:before{content:"\f185"}
+.i-moon:before{content:"\f186"}
+.i-auto:before{content:"\f390"}
+.i-close:before{content:"\f00d"}
+.i-save:before{content:"\f0c7"}
+.i-check:before{content:"\f00c"}
+.i-back:before{content:"\f060"}
+.i-eye:before{content:"\f06e"}
+.i-send:before{content:"\f1d8"}
+.i-bold:before{content:"\f032"}
+.i-italic:before{content:"\f033"}
+.i-heading:before{content:"\f1dc"}
+.i-list:before{content:"\f0ca"}
+.i-quote:before{content:"\f10d"}
+.i-info:before{content:"\f05a"}
+.i-clock:before{content:"\f017"}
+.i-ok:before{content:"\f058"}
+.i-warn:before{content:"\f071"}
+.i-retry:before{content:"\f2f1"}
+.i-play:before{content:"\f04b"}
+.i-book:before{content:"\f518"}
+.i-copy:before{content:"\f0c5"}
+.i-code:before{content:"\f121"}
+
+/* =========================================================
+   浅色主题
+   ========================================================= */
+
+:root{
+  --bg:#f5f6f8;
+  --surface:#fff;
+  --surface2:#f8f9fb;
+  --surface3:#eef1f4;
+  --hover:#f3f5f7;
+
+  --border:#e3e7eb;
+  --border2:#cfd5dc;
+
+  --text:#20262d;
+  --text2:#59636e;
+  --text3:#87919c;
+
+  --primary:#3b6f9e;
+  --primary-hover:#315f89;
+  --primary-soft:#edf4fa;
+
+  --success:#2f7d5c;
+  --success-soft:#eaf5ef;
+
+  --warning:#a46d1f;
+  --warning-soft:#fff6df;
+
+  --danger:#b84b4b;
+  --danger-soft:#fff0f0;
+
+  --sidebar-width:224px;
+  --radius:9px;
+
+  --shadow:
+    0 1px 2px rgba(24,34,44,.04);
+
+  color-scheme:light;
+}
+
+/* =========================================================
+   深色主题
+   ========================================================= */
+
+html[data-theme="dark"]{
+  --bg:#17191c;
+  --surface:#202327;
+  --surface2:#25292d;
+  --surface3:#2c3035;
+  --hover:#292d32;
+
+  --border:#353a40;
+  --border2:#454b52;
+
+  --text:#edf0f2;
+  --text2:#b4bac0;
+  --text3:#858c94;
+
+  --primary:#7da7cc;
+  --primary-hover:#91b5d4;
+  --primary-soft:#263541;
+
+  --success:#76b897;
+  --success-soft:#24372f;
+
+  --warning:#d0a85b;
+  --warning-soft:#3a3323;
+
+  --danger:#dc7979;
+  --danger-soft:#3d2929;
+
+  --shadow:none;
+
+  color-scheme:dark;
+}
+
+/* =========================================================
+   基础
+   ========================================================= */
+
+*{
+  box-sizing:border-box;
+}
+
+html,
+body{
+  margin:0;
+  min-height:100%;
+}
+
+body{
+  background:var(--bg);
+  color:var(--text);
+
+  font:
+    14px/1.5
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+}
+
+button,
+input,
+select,
+textarea{
+  font:inherit;
+}
+
+button{
+  cursor:pointer;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[contenteditable]:focus-visible{
+  outline:2px solid color-mix(
+    in srgb,
+    var(--primary) 55%,
+    transparent
+  );
+  outline-offset:2px;
+}
+
+.app{
+  min-height:100vh;
+}
+
+/* =========================================================
+   侧边栏
+   ========================================================= */
+
+.sidebar{
+  position:fixed;
+  inset:0 auto 0 0;
+
+  width:var(--sidebar-width);
+
+  background:var(--surface);
+  border-right:1px solid var(--border);
+
+  z-index:20;
+}
+
+.brand{
+  height:64px;
+
+  display:flex;
+  align-items:center;
+  gap:10px;
+
+  padding:0 20px;
+
+  border-bottom:1px solid var(--border);
+
+  font-weight:680;
+}
+
+.mark{
+  width:27px;
+  height:27px;
+
+  display:grid;
+  place-items:center;
+
+  border-radius:6px;
+
+  background:var(--primary);
+  color:#fff;
+
+  font-size:12px;
+}
+
+nav{
+  padding:16px 11px;
+}
+
+.section{
+  padding:12px 11px 6px;
+
+  color:var(--text3);
+
+  font-size:10px;
+  font-weight:650;
+}
+
+.nav{
+  height:40px;
+
+  padding:0 11px;
+  margin:2px 0;
+
+  display:flex;
+  align-items:center;
+  gap:11px;
+
+  position:relative;
+
+  border-radius:6px;
+
+  color:var(--text2);
+
+  cursor:pointer;
+}
+
+.nav:hover{
+  background:var(--hover);
+  color:var(--text);
+}
+
+.nav.active{
+  background:var(--primary-soft);
+  color:var(--primary);
+
+  font-weight:620;
+}
+
+.nav.active::before{
+  content:"";
+
+  position:absolute;
+
+  left:0;
+  top:9px;
+  bottom:9px;
+
+  width:3px;
+
+  border-radius:2px;
+
+  background:var(--primary);
+}
+
+.nav .fa{
+  width:18px;
+  text-align:center;
+}
+
+.count{
+  margin-left:auto;
+
+  min-width:22px;
+
+  padding:2px 6px;
+
+  text-align:center;
+
+  border-radius:10px;
+
+  background:var(--surface3);
+  color:var(--text3);
+
+  font-size:10px;
+}
+
+/* =========================================================
+   主区域
+   ========================================================= */
+
+.main{
+  margin-left:var(--sidebar-width);
+}
+
+header{
+  height:64px;
+
+  position:sticky;
+  top:0;
+
+  z-index:15;
+
+  display:flex;
+  align-items:center;
+
+  padding:0 28px;
+
+  border-bottom:1px solid var(--border);
+
+  background:
+    color-mix(
+      in srgb,
+      var(--surface) 95%,
+      transparent
+    );
+
+  backdrop-filter:blur(10px);
+}
+
+.top-left{
+  flex:1;
+}
+
+#topName{
+  font-weight:650;
+}
+
+#crumb{
+  margin-top:2px;
+
+  color:var(--text3);
+
+  font-size:10px;
+}
+
+.top-right{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+.search{
+  width:205px;
+  height:34px;
+
+  display:flex;
+  align-items:center;
+  gap:8px;
+
+  padding:0 10px;
+
+  border:1px solid var(--border);
+  border-radius:6px;
+
+  background:var(--surface2);
+  color:var(--text3);
+}
+
+.search input{
+  width:100%;
+
+  border:0;
+  outline:0;
+
+  background:transparent;
+  color:var(--text);
+
+  font-size:11px;
+}
+
+/* =========================================================
+   主题切换
+   ========================================================= */
+
+.themes{
+  height:34px;
+
+  padding:3px;
+
+  display:flex;
+
+  border:1px solid var(--border);
+  border-radius:7px;
+
+  background:var(--surface2);
+}
+
+.theme{
+  padding:0 8px;
+
+  display:flex;
+  align-items:center;
+  gap:5px;
+
+  border:0;
+  border-radius:5px;
+
+  background:transparent;
+  color:var(--text3);
+
+  font-size:10px;
+}
+
+.theme.active{
+  background:var(--surface);
+  color:var(--primary);
+
+  box-shadow:var(--shadow);
+}
+
+/* =========================================================
+   页面
+   ========================================================= */
+
+.page{
+  display:none;
+
+  max-width:1540px;
+
+  margin:auto;
+  padding:26px 28px 60px;
+}
+
+.page.active{
+  display:block;
+}
+
+.page-header{
+  margin-bottom:20px;
+
+  display:flex;
+  justify-content:space-between;
+  gap:16px;
+}
+
+h1{
+  margin:0;
+
+  font-size:22px;
+
+  letter-spacing:-.4px;
+}
+
+.page-header p{
+  margin:6px 0 0;
+
+  color:var(--text3);
+
+  font-size:11px;
+}
+
+.actions,
+.filters{
+  display:flex;
+  align-items:center;
+  gap:8px;
+
+  flex-wrap:wrap;
+}
+
+/* =========================================================
+   按钮
+   ========================================================= */
+
+.btn{
+  height:34px;
+
+  padding:0 12px;
+
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+
+  border:1px solid var(--border2);
+  border-radius:6px;
+
+  background:var(--surface);
+  color:var(--text2);
+
+  font-size:11px;
+}
+
+.btn:hover{
+  background:var(--surface2);
+  color:var(--text);
+}
+
+.btn.primary{
+  border-color:var(--primary);
+
+  background:var(--primary);
+  color:#fff;
+}
+
+.btn.primary:hover{
+  background:var(--primary-hover);
+  color:#fff;
+}
+
+.btn.danger{
+  color:var(--danger);
+}
+
+.btn.small{
+  height:29px;
+  padding:0 9px;
+
+  font-size:10px;
+}
+
+/* =========================================================
+   卡片、输入框
+   ========================================================= */
+
+.card{
+  background:var(--surface);
+
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+
+  box-shadow:var(--shadow);
+}
+
+.card-header{
+  min-height:54px;
+
+  padding:13px 17px;
+
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+
+  border-bottom:1px solid var(--border);
+}
+
+.card-title{
+  font-size:12px;
+  font-weight:660;
+}
+
+.card-subtitle{
+  margin-top:3px;
+
+  color:var(--text3);
+
+  font-size:9px;
+}
+
+.card-body{
+  padding:17px;
+}
+
+.input{
+  height:35px;
+
+  padding:0 10px;
+
+  border:1px solid var(--border2);
+  border-radius:6px;
+
+  outline:0;
+
+  background:var(--surface);
+  color:var(--text);
+
+  font-size:11px;
+}
+
+textarea.input{
+  height:86px;
+  padding:9px 10px;
+}
+
+/* =========================================================
+   统计
+   ========================================================= */
+
+.stats{
+  margin-bottom:17px;
+
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:13px;
+}
+
+.stat{
+  padding:17px;
+}
+
+.stat label{
+  color:var(--text3);
+  font-size:10px;
+}
+
+.stat b{
+  display:block;
+
+  margin-top:10px;
+
+  font-size:25px;
+}
+
+.stat small{
+  color:var(--text3);
+  font-size:9px;
+}
+
+.grid2{
+  margin-bottom:17px;
+
+  display:grid;
+  grid-template-columns:1.55fr .8fr;
+  gap:17px;
+}
+
+.usage{
+  margin-bottom:17px;
+}
+
+.usage-head{
+  margin-bottom:7px;
+
+  display:flex;
+  justify-content:space-between;
+
+  font-size:10px;
+}
+
+.bar{
+  height:6px;
+
+  overflow:hidden;
+
+  border-radius:9px;
+
+  background:var(--surface3);
+}
+
+.bar i{
+  display:block;
+
+  height:100%;
+
+  background:var(--primary);
+}
+
+/* =========================================================
+   表格
+   ========================================================= */
+
+.table-wrap{
+  overflow:auto;
+}
+
+table{
+  width:100%;
+
+  border-collapse:collapse;
+}
+
+th{
+  padding:10px 14px;
+
+  border-bottom:1px solid var(--border);
+
+  background:var(--surface2);
+  color:var(--text3);
+
+  text-align:left;
+
+  font-size:9px;
+  white-space:nowrap;
+}
+
+td{
+  padding:12px 14px;
+
+  border-bottom:1px solid var(--border);
+
+  font-size:11px;
+}
+
+tr:last-child td{
+  border-bottom:0;
+}
+
+tbody tr:hover{
+  background:var(--surface2);
+}
+
+.clickable{
+  cursor:pointer;
+}
+
+.mono-id{
+  margin-top:3px;
+
+  color:var(--text3);
+
+  font:
+    8px
+    ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+}
+
+/* =========================================================
+   状态
+   ========================================================= */
+
+.badge{
+  padding:3px 7px;
+
+  display:inline-flex;
+  align-items:center;
+
+  border-radius:11px;
+
+  font-size:9px;
+  font-weight:650;
+
+  white-space:nowrap;
+}
+
+.badge-success{
+  background:var(--success-soft);
+  color:var(--success);
+}
+
+.badge-running{
+  background:var(--primary-soft);
+  color:var(--primary);
+}
+
+.badge-waiting{
+  background:var(--warning-soft);
+  color:var(--warning);
+}
+
+.badge-failed{
+  background:var(--danger-soft);
+  color:var(--danger);
+}
+
+.badge-neutral{
+  background:var(--surface3);
+  color:var(--text2);
+}
+
+/* =========================================================
+   任务详情
+   ========================================================= */
+
+.run-hero{
+  margin-bottom:17px;
+  padding:18px;
+}
+
+.run-row{
+  display:flex;
+  justify-content:space-between;
+  gap:16px;
+}
+
+.run-title{
+  font-size:20px;
+  font-weight:690;
+}
+
+.run-meta{
+  margin-top:10px;
+
+  display:flex;
+  flex-wrap:wrap;
+  gap:17px;
+
+  color:var(--text3);
+
+  font-size:9px;
+}
+
+.run-layout{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 310px;
+  gap:17px;
+}
+
+.step{
+  position:relative;
+
+  padding:10px 17px 10px 54px;
+}
+
+.step::before{
+  content:"";
+
+  position:absolute;
+
+  left:31px;
+  top:0;
+  bottom:0;
+
+  width:1px;
+
+  background:var(--border);
+}
+
+.step-dot{
+  position:absolute;
+
+  left:23px;
+  top:17px;
+
+  width:17px;
+  height:17px;
+
+  display:grid;
+  place-items:center;
+
+  border:2px solid var(--border2);
+  border-radius:50%;
+
+  background:var(--surface);
+
+  font-size:7px;
+}
+
+.step.done .step-dot{
+  border-color:var(--success);
+
+  background:var(--success);
+  color:#fff;
+}
+
+.step.running .step-dot{
+  border-color:var(--primary);
+
+  box-shadow:
+    0 0 0 3px var(--primary-soft);
+}
+
+.step.waiting .step-dot{
+  border-color:var(--warning);
+  color:var(--warning);
+}
+
+.step-head{
+  display:flex;
+  justify-content:space-between;
+
+  font-size:11px;
+  font-weight:620;
+}
+
+.step-desc{
+  margin-top:3px;
+
+  color:var(--text3);
+
+  font-size:9px;
+}
+
+.metric{
+  padding:14px;
+
+  border-bottom:1px solid var(--border);
+}
+
+.metric small{
+  color:var(--text3);
+  font-size:9px;
+}
+
+.metric b{
+  display:block;
+
+  margin-top:4px;
+}
+
+.events{
+  max-height:245px;
+
+  overflow:auto;
+
+  padding:12px;
+}
+
+.event{
+  padding:7px 0;
+
+  display:grid;
+  grid-template-columns:52px 1fr;
+  gap:8px;
+
+  border-bottom:
+    1px dashed var(--border);
+
+  font-size:9px;
+}
+
+.event time{
+  color:var(--text3);
+}
+
+.direction-box{
+  margin:12px 17px;
+
+  padding:14px;
+
+  border:
+    1px solid
+    color-mix(
+      in srgb,
+      var(--primary) 35%,
+      var(--border)
+    );
+
+  border-radius:8px;
+
+  background:var(--primary-soft);
+}
+
+.direction-grid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:8px;
+}
+
+.direction-option{
+  padding:10px;
+
+  border:1px solid var(--border);
+  border-radius:7px;
+
+  background:var(--surface);
+  color:var(--text);
+
+  text-align:left;
+}
+
+.direction-option:hover{
+  border-color:var(--primary);
+}
+
+/* =========================================================
+   草稿编辑
+   ========================================================= */
+
+.editor-layout{
+  display:grid;
+  grid-template-columns:
+    210px
+    minmax(0,1fr)
+    300px;
+
+  gap:15px;
+
+  align-items:start;
+}
+
+.versions{
+  padding:7px;
+}
+
+.version{
+  margin-bottom:2px;
+
+  padding:10px;
+
+  border-radius:6px;
+
+  cursor:pointer;
+}
+
+.version.active{
+  background:var(--primary-soft);
+  color:var(--primary);
+}
+
+.version small{
+  display:block;
+
+  margin-top:3px;
+
+  color:var(--text3);
+
+  font-size:8px;
+}
+
+.toolbar{
+  min-height:44px;
+
+  padding:7px 12px;
+
+  display:flex;
+  align-items:center;
+  gap:4px;
+
+  border-bottom:1px solid var(--border);
+}
+
+.tool{
+  width:28px;
+  height:28px;
+
+  border:0;
+  border-radius:5px;
+
+  background:transparent;
+  color:var(--text2);
+}
+
+.tool:hover{
+  background:var(--surface3);
+}
+
+.autosave{
+  margin-left:auto;
+
+  color:var(--text3);
+
+  font-size:9px;
+}
+
+.editor{
+  min-height:690px;
+
+  padding:34px 42px 60px;
+
+  outline:0;
+
+  line-height:1.82;
+}
+
+.editor h1{
+  font-size:25px;
+}
+
+.editor h2{
+  margin-top:28px;
+
+  font-size:17px;
+}
+
+.editor p,
+.editor li{
+  color:var(--text2);
+}
+
+.editor blockquote{
+  margin:18px 0;
+
+  padding:10px 14px;
+
+  border-left:
+    3px solid var(--primary);
+
+  background:var(--primary-soft);
+}
+
+.preview{
+  padding:14px;
+}
+
+.phone{
+  padding:8px;
+
+  border:1px solid var(--border2);
+  border-radius:17px;
+
+  background:var(--surface2);
+}
+
+.phone-screen{
+  min-height:470px;
+
+  overflow:hidden;
+
+  border-radius:11px;
+
+  background:var(--surface);
+}
+
+.phone-top{
+  height:33px;
+
+  display:grid;
+  place-items:center;
+
+  border-bottom:1px solid var(--border);
+
+  color:var(--text3);
+
+  font-size:8px;
+}
+
+.preview-cover{
+  min-height:205px;
+
+  margin:10px;
+  padding:22px;
+
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+
+  border-radius:7px;
+
+  background:#e8edf2;
+  color:#263746;
+}
+
+html[data-theme="dark"] .preview-cover{
+  background:#303841;
+  color:#edf2f6;
+}
+
+.preview-cover strong{
+  font-size:22px;
+  line-height:1.25;
+}
+
+.preview-body{
+  padding:5px 13px 20px;
+
+  color:var(--text2);
+
+  font-size:9px;
+  line-height:1.65;
+}
+
+/* =========================================================
+   研究资料
+   ========================================================= */
+
+.sources{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:13px;
+}
+
+.source{
+  padding:15px;
+}
+
+.source-type{
+  color:var(--primary);
+
+  font-size:8px;
+  font-weight:700;
+}
+
+.source h3{
+  margin:7px 0;
+
+  font-size:12px;
+}
+
+.source p{
+  color:var(--text3);
+
+  font-size:9px;
+}
+
+.source footer{
+  margin-top:11px;
+  padding-top:9px;
+
+  display:flex;
+  justify-content:space-between;
+
+  border-top:1px solid var(--border);
+
+  color:var(--text3);
+
+  font-size:8px;
+}
+
+/* =========================================================
+   设置
+   ========================================================= */
+
+.settings{
+  display:grid;
+  grid-template-columns:195px 1fr;
+  gap:17px;
+}
+
+.settings-menu{
+  padding:7px;
+}
+
+.settings-menu button{
+  width:100%;
+
+  padding:9px 10px;
+
+  border:0;
+  border-radius:6px;
+
+  background:transparent;
+  color:var(--text2);
+
+  text-align:left;
+
+  font-size:10px;
+}
+
+.settings-menu button.active{
+  background:var(--primary-soft);
+  color:var(--primary);
+}
+
+.settings-panel{
+  display:none;
+}
+
+.settings-panel.active{
+  display:block;
+}
+
+.settings-section{
+  padding:19px;
+
+  border-bottom:1px solid var(--border);
+}
+
+.form-row{
+  margin:13px 0;
+
+  display:grid;
+  grid-template-columns:175px 1fr;
+  align-items:center;
+  gap:18px;
+}
+
+.notice{
+  padding:11px;
+
+  border-radius:7px;
+
+  background:var(--warning-soft);
+  color:var(--warning);
+
+  font-size:9px;
+}
+
+.code{
+  padding:12px;
+
+  border-radius:6px;
+
+  background:#1c2024;
+  color:#dbe1e5;
+
+  white-space:pre-wrap;
+
+  font:
+    9px/1.65
+    ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+}
+
+/* =========================================================
+   模态
+   ========================================================= */
+
+.modal-backdrop{
+  position:fixed;
+  inset:0;
+
+  z-index:100;
+
+  display:none;
+  align-items:center;
+  justify-content:center;
+
+  padding:20px;
+
+  background:
+    rgba(17,22,27,.46);
+}
+
+.modal-backdrop.show{
+  display:flex;
+}
+
+.modal{
+  width:620px;
+  max-width:100%;
+  max-height:
+    calc(100vh - 40px);
+
+  overflow:auto;
+
+  border:1px solid var(--border);
+  border-radius:10px;
+
+  background:var(--surface);
+}
+
+.modal-header,
+.modal-footer{
+  padding:14px 18px;
+
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+}
+
+.modal-header{
+  border-bottom:1px solid var(--border);
+}
+
+.modal-footer{
+  border-top:1px solid var(--border);
+
+  justify-content:flex-end;
+}
+
+.modal-body{
+  padding:18px;
+}
+
+.field{
+  margin-bottom:17px;
+}
+
+.field > label,
+.field legend{
+  display:block;
+
+  margin-bottom:6px;
+
+  font-size:10px;
+  font-weight:630;
+}
+
+.choices{
+  display:flex;
+  gap:8px;
+}
+
+.choice{
+  flex:1;
+
+  padding:10px;
+
+  border:1px solid var(--border);
+  border-radius:7px;
+
+  background:var(--surface);
+  color:var(--text2);
+
+  text-align:left;
+
+  font-size:9px;
+}
+
+.choice.active{
+  border-color:var(--primary);
+
+  background:var(--primary-soft);
+  color:var(--primary);
+}
+
+.choice strong{
+  display:block;
+
+  margin-bottom:3px;
+
+  font-size:10px;
+}
+
+/* =========================================================
+   Toast
+   ========================================================= */
+
+.toast{
+  position:fixed;
+
+  right:23px;
+  bottom:23px;
+
+  z-index:200;
+
+  padding:10px 13px;
+
+  border-radius:7px;
+
+  background:#252a2f;
+  color:#fff;
+
+  font-size:10px;
+
+  opacity:0;
+
+  transform:
+    translateY(14px);
+
+  transition:.2s;
+
+  pointer-events:none;
+}
+
+.toast.show{
+  opacity:1;
+  transform:none;
+}
+
+.empty{
+  padding:42px 20px;
+
+  text-align:center;
+
+  color:var(--text3);
+
+  font-size:10px;
+}
+
+/* =========================================================
+   响应式
+   ========================================================= */
+
+@media(max-width:1100px){
+  .stats{
+    grid-template-columns:
+      repeat(2,1fr);
+  }
+
+  .grid2{
+    grid-template-columns:1fr;
+  }
+
+  .editor-layout{
+    grid-template-columns:
+      190px 1fr;
+  }
+
+  .preview-card{
+    display:none;
+  }
+
+  .sources{
+    grid-template-columns:
+      repeat(2,1fr);
+  }
+}
+
+@media(max-width:850px){
+  :root{
+    --sidebar-width:66px;
+  }
+
+  .brand{
+    padding:0;
+    justify-content:center;
+  }
+
+  .brand span:last-child,
+  .section,
+  .nav span:not(.fa),
+  .search{
+    display:none;
+  }
+
+  .nav{
+    justify-content:center;
+    padding:0;
+  }
+
+  header{
+    padding:0 16px;
+  }
+
+  .page{
+    padding:20px 16px;
+  }
+
+  .run-layout,
+  .settings{
+    grid-template-columns:1fr;
+  }
+
+  .direction-grid{
+    grid-template-columns:1fr;
+  }
+}
+
+@media(max-width:650px){
+  .stats{
+    grid-template-columns:
+      1fr 1fr;
+  }
+
+  .sources,
+  .editor-layout{
+    grid-template-columns:1fr;
+  }
+
+  .page-header,
+  .run-row{
+    flex-direction:column;
+  }
+
+  .choices{
+    flex-direction:column;
+  }
+
+  .form-row{
+    grid-template-columns:1fr;
+    gap:5px;
+  }
+
+  .theme span:last-child{
+    display:none;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<div class="app">
+
+  <!-- =====================================================
+       侧边栏
+       ===================================================== -->
+
+  <aside class="sidebar">
+
+    <div class="brand">
+      <span class="mark">内</span>
+      <span>内容工作台</span>
+    </div>
+
+    <nav aria-label="主导航">
+
+      <div class="section">工作台</div>
+
+      <div class="nav active"
+           data-nav="dashboard"
+           tabindex="0">
+        <span class="fa i-grid"
+              aria-hidden="true"></span>
+        <span>概览</span>
+      </div>
+
+      <div class="nav"
+           data-nav="runs"
+           tabindex="0">
+        <span class="fa i-run"
+              aria-hidden="true"></span>
+        <span>工作流</span>
+        <span class="count"
+              id="runCount">0</span>
+      </div>
+
+      <div class="nav"
+           data-nav="drafts"
+           tabindex="0">
+        <span class="fa i-draft"
+              aria-hidden="true"></span>
+        <span>草稿箱</span>
+        <span class="count"
+              id="draftCount">0</span>
+      </div>
+
+      <div class="nav"
+           data-nav="sources"
+           tabindex="0">
+        <span class="fa i-book"
+              aria-hidden="true"></span>
+        <span>研究资料</span>
+      </div>
+
+      <div class="section">发布</div>
+
+      <div class="nav"
+           data-nav="publishing"
+           tabindex="0">
+        <span class="fa i-publish"
+              aria-hidden="true"></span>
+        <span>发布管理</span>
+        <span class="count"
+              id="publishCount">0</span>
+      </div>
+
+      <div class="section">系统</div>
+
+      <div class="nav"
+           data-nav="settings"
+           tabindex="0">
+        <span class="fa i-set"
+              aria-hidden="true"></span>
+        <span>系统设置</span>
+      </div>
+
+    </nav>
+  </aside>
+
+
+  <!-- =====================================================
+       主区域
+       ===================================================== -->
+
+  <main class="main">
+
+    <header>
+
+      <div class="top-left">
+        <div id="topName">概览</div>
+        <div id="crumb">
+          内容生产与多平台发布
+        </div>
+      </div>
+
+      <div class="top-right">
+
+        <label class="search"
+               aria-label="搜索工作流">
+
+          <span class="fa i-search"
+                aria-hidden="true"></span>
+
+          <input
+            id="globalSearch"
+            placeholder="搜索工作流"
+            autocomplete="off">
+
+        </label>
+
+
+        <!-- 主题 -->
+
+        <div class="themes">
+
+          <button
+            class="theme"
+            type="button"
+            data-theme="light">
+
+            <span class="fa i-sun"
+                  aria-hidden="true"></span>
+
+            <span>浅色</span>
+
+          </button>
+
+          <button
+            class="theme"
+            type="button"
+            data-theme="dark">
+
+            <span class="fa i-moon"
+                  aria-hidden="true"></span>
+
+            <span>深色</span>
+
+          </button>
+
+          <button
+            class="theme"
+            type="button"
+            data-theme="auto">
+
+            <span class="fa i-auto"
+                  aria-hidden="true"></span>
+
+            <span>自动</span>
+
+          </button>
+
+        </div>
+
+
+        <button
+          class="btn primary"
+          type="button"
+          data-create>
+
+          <span class="fa i-plus"
+                aria-hidden="true"></span>
+
+          新建任务
+
+        </button>
+
+      </div>
+    </header>
+
+
+    <!-- ===================================================
+         概览
+         =================================================== -->
+
+    <section
+      class="page active"
+      id="page-dashboard">
+
+      <div class="page-header">
+
+        <div>
+          <h1>概览</h1>
+          <p>
+            查看内容生产、待审核草稿、
+            接口用量和平台发布情况。
+          </p>
+        </div>
+
+        <button
+          class="btn primary"
+          type="button"
+          data-create>
+
+          <span class="fa i-plus"
+                aria-hidden="true"></span>
+
+          新建任务
+
+        </button>
+
+      </div>
+
+      <div class="stats"
+           id="dashboardStats"></div>
+
+      <div class="grid2">
+
+        <div class="card">
+
+          <div class="card-header">
+
+            <div>
+              <div class="card-title">
+                最近执行
+              </div>
+
+              <div class="card-subtitle">
+                最近创建和执行的内容任务
+              </div>
+            </div>
+
+            <button
+              class="btn small"
+              type="button"
+              data-go="runs">
+              查看全部
+            </button>
+
+          </div>
+
+          <div class="table-wrap"
+               id="dashboardRecent">
+          </div>
+
+        </div>
+
+
+        <div class="card">
+
+          <div class="card-header">
+
+            <div>
+              <div class="card-title">
+                本月用量
+              </div>
+
+              <div class="card-subtitle">
+                搜索、模型与发布资源
+              </div>
+            </div>
+
+          </div>
+
+          <div class="card-body"
+               id="usage">
+          </div>
+
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- ===================================================
+         工作流
+         =================================================== -->
+
+    <section
+      class="page"
+      id="page-runs">
+
+      <div class="page-header">
+
+        <div>
+          <h1>工作流</h1>
+          <p>
+            查看、搜索和管理所有内容生产任务。
+          </p>
+        </div>
+
+        <button
+          class="btn primary"
+          type="button"
+          data-create>
+
+          <span class="fa i-plus"
+                aria-hidden="true"></span>
+
+          新建任务
+
+        </button>
+
+      </div>
+
+      <div class="card">
+
+        <div class="card-header">
+
+          <div class="filters">
+
+            <input
+              class="input"
+              id="runSearch"
+              placeholder="搜索主题或任务编号">
+
+            <select
+              class="input"
+              id="runFilter">
+
+              <option value="all">
+                全部状态
+              </option>
+
+              <option value="running">
+                执行中
+              </option>
+
+              <option value="waiting_direction">
+                等待选择方向
+              </option>
+
+              <option value="waiting_review">
+                等待审核
+              </option>
+
+              <option value="success">
+                已完成
+              </option>
+
+              <option value="failed">
+                失败
+              </option>
+
+            </select>
+
+          </div>
+
+        </div>
+
+        <div
+          class="table-wrap"
+          id="runsTable">
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- ===================================================
+         工作流详情
+         =================================================== -->
+
+    <section
+      class="page"
+      id="page-run-detail">
+
+      <div id="runDetail"></div>
+
+    </section>
+
+
+    <!-- ===================================================
+         草稿箱
+         =================================================== -->
+
+    <section
+      class="page"
+      id="page-drafts">
+
+      <div class="page-header">
+
+        <div>
+          <h1>草稿箱</h1>
+
+          <p>
+            仅保存创建任务时选择“人工审核”的平台内容，
+            修改并审核后进入发布队列。
+          </p>
+        </div>
+
+      </div>
+
+      <div
+        class="stats"
+        id="draftStats">
+      </div>
+
+      <div class="card">
+
+        <div class="card-header">
+
+          <div>
+            <div class="card-title">
+              待审核草稿
+            </div>
+
+            <div class="card-subtitle">
+              支持关键词搜索和目标平台筛选
+            </div>
+          </div>
+
+          <div class="filters">
+
+            <input
+              class="input"
+              id="draftSearch"
+              placeholder="搜索草稿">
+
+            <select
+              class="input"
+              id="draftPlatform">
+
+              <option value="all">
+                全部平台
+              </option>
+
+              <option value="xiaohongshu">
+                小红书
+              </option>
+
+              <option value="zhihu">
+                知乎
+              </option>
+
+              <option value="wechat">
+                微信公众号
+              </option>
+
+            </select>
+
+          </div>
+
+        </div>
+
+        <div
+          class="table-wrap"
+          id="draftTable">
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- ===================================================
+         草稿编辑
+         =================================================== -->
+
+    <section
+      class="page"
+      id="page-draft-editor">
+
+      <div id="draftEditorPage"></div>
+
+    </section>
+
+
+    <!-- ===================================================
+         研究资料
+         =================================================== -->
+
+    <section
+      class="page"
+      id="page-sources">
+
+      <div class="page-header">
+
+        <div>
+          <h1>研究资料</h1>
+
+          <p>
+            搜索阶段获取并用于内容生成的资料来源；
+            真实系统可由 Brave Search /
+            Brave LLM Context 写入。
+          </p>
+        </div>
+
+      </div>
+
+      <div
+        class="sources"
+        id="sourcesGrid">
+      </div>
+
+    </section>
+
+
+    <!-- ===================================================
+         发布管理
+         =================================================== -->
+
+    <section
+      class="page"
+      id="page-publishing">
+
+      <div class="page-header">
+
+        <div>
+          <h1>发布管理</h1>
+
+          <p>
+            查看平台发布队列、成功记录和失败重试。
+          </p>
+        </div>
+
+      </div>
+
+      <div
+        class="stats"
+        id="publishingStats">
+      </div>
+
+      <div class="card">
+
+        <div class="card-header">
+
+          <div>
+            <div class="card-title">
+              发布记录
+            </div>
+
+            <div class="card-subtitle">
+              草稿审核通过后会在这里生成等待发布任务
+            </div>
+          </div>
+
+          <button
+            class="btn small"
+            type="button"
+            id="processQueue">
+
+            <span class="fa i-play"
+                  aria-hidden="true"></span>
+
+            模拟处理队列
+
+          </button>
+
+        </div>
+
+        <div
+          class="table-wrap"
+          id="publishingTable">
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- ===================================================
+         系统设置
+         =================================================== -->
+
+    <section
+      class="page"
+      id="page-settings">
+
+      <div class="page-header">
+
+        <div>
+          <h1>系统设置</h1>
+
+          <p>
+            配置模型、搜索、发布服务、
+            工作流策略与外部调度接口。
+          </p>
+        </div>
+
+        <button
+          class="btn primary"
+          type="button"
+          id="saveSettings">
+
+          <span class="fa i-save"
+                aria-hidden="true"></span>
+
+          保存设置
+
+        </button>
+
+      </div>
+
+      <div class="settings">
+
+        <div class="card settings-menu">
+
+          <button
+            class="active"
+            data-settings="general">
+            基础设置
+          </button>
+
+          <button
+            data-settings="models">
+            模型配置
+          </button>
+
+          <button
+            data-settings="search">
+            搜索配置
+          </button>
+
+          <button
+            data-settings="publish">
+            发布服务
+          </button>
+
+          <button
+            data-settings="workflow">
+            工作流配置
+          </button>
+
+          <button
+            data-settings="scheduler">
+            外部调度接口
+          </button>
+
+        </div>
+
+        <div
+          class="card"
+          id="settingsPanels">
+        </div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+</div>
+
+
+<!-- =======================================================
+     新建任务
+     ======================================================= -->
+
+<div
+  class="modal-backdrop"
+  id="createModal">
+
+  <div
+    class="modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="createTitle">
+
+    <div class="modal-header">
+
+      <div>
+
+        <b id="createTitle">
+          新建内容任务
+        </b>
+
+        <div class="card-subtitle">
+          创建新的研究、生成与发布工作流
+        </div>
+
+      </div>
+
+      <button
+        class="btn small"
+        type="button"
+        data-close="createModal"
+        aria-label="关闭">
+
+        <span
+          class="fa i-close"
+          aria-hidden="true">
+        </span>
+
+      </button>
+
+    </div>
+
+
+    <div class="modal-body">
+
+      <div class="field">
+
+        <label for="topic">
+          主题
+        </label>
+
+        <textarea
+          class="input"
+          id="topic">Transformer 架构</textarea>
+
+      </div>
+
+
+      <div class="field">
+
+        <label>
+          内容方向选择
+        </label>
+
+        <div
+          class="choices"
+          id="directionChoices">
+
+          <button
+            class="choice active"
+            type="button"
+            data-value="auto">
+
+            <strong>自动选择</strong>
+            系统自动选择最合适方向
+
+          </button>
+
+          <button
+            class="choice"
+            type="button"
+            data-value="manual">
+
+            <strong>人工选择</strong>
+            生成候选方向后等待人工确认
+
+          </button>
+
+        </div>
+
+      </div>
+
+
+      <div class="field">
+
+        <label>
+          发布方式
+        </label>
+
+        <div
+          class="choices"
+          id="publishChoices">
+
+          <button
+            class="choice"
+            type="button"
+            data-value="auto">
+
+            <strong>自动发布</strong>
+            平台内容直接加入发布队列
+
+          </button>
+
+          <button
+            class="choice active"
+            type="button"
+            data-value="review">
+
+            <strong>人工审核</strong>
+            平台版本先进入草稿箱
+
+          </button>
+
+        </div>
+
+      </div>
+
+
+      <fieldset
+        class="field"
+        style="border:0;padding:0">
+
+        <legend>
+          发布平台
+        </legend>
+
+        <div
+          class="choices"
+          id="platformChoices">
+
+          <label class="choice active">
+            <input
+              type="checkbox"
+              value="xiaohongshu"
+              checked>
+            小红书
+          </label>
+
+          <label class="choice active">
+            <input
+              type="checkbox"
+              value="zhihu"
+              checked>
+            知乎
+          </label>
+
+          <label class="choice">
+            <input
+              type="checkbox"
+              value="wechat">
+            微信公众号
+          </label>
+
+        </div>
+
+      </fieldset>
+
+    </div>
+
+
+    <div class="modal-footer">
+
+      <button
+        class="btn"
+        type="button"
+        data-close="createModal">
+        取消
+      </button>
+
+      <button
+        class="btn primary"
+        type="button"
+        id="createRun">
+
+        <span
+          class="fa i-play"
+          aria-hidden="true">
+        </span>
+
+        创建并执行
+
+      </button>
+
+    </div>
+
+  </div>
+
+</div>
+
+
+<!-- =======================================================
+     确认框
+     ======================================================= -->
+
+<div
+  class="modal-backdrop"
+  id="confirmModal">
+
+  <div
+    class="modal"
+    style="width:430px"
+    role="alertdialog"
+    aria-modal="true">
+
+    <div class="modal-body">
+
+      <h3 id="confirmTitle">
+        确认操作
+      </h3>
+
+      <p
+        id="confirmText"
+        style="
+          font-size:10px;
+          color:var(--text2)
+        ">
+      </p>
+
+    </div>
+
+    <div class="modal-footer">
+
+      <button
+        class="btn"
+        type="button"
+        id="confirmNo">
+        取消
+      </button>
+
+      <button
+        class="btn primary"
+        type="button"
+        id="confirmYes">
+        确认
+      </button>
+
+    </div>
+
+  </div>
+
+</div>
+
+
+<div
+  class="toast"
+  id="toast"
+  role="status"
+  aria-live="polite">
+</div>
+
+
+<script>
+(() => {
+  "use strict";
+
+  /* =======================================================
+     数据与存储
+     ======================================================= */
+
+  const STORAGE_KEY = "content-workbench-v3";
+
+  const memoryStore = new Map();
+
+  const StorageBox = {
+
+    get(key, fallback) {
+
+      try {
+        const value =
+          window.localStorage.getItem(key);
+
+        return value === null
+          ? fallback
+          : JSON.parse(value);
+
+      } catch (error) {
+
+        return memoryStore.has(key)
+          ? memoryStore.get(key)
+          : fallback;
+      }
+    },
+
+    set(key, value) {
+
+      try {
+
+        window.localStorage.setItem(
+          key,
+          JSON.stringify(value)
+        );
+
+      } catch (error) {
+
+        memoryStore.set(
+          key,
+          value
+        );
+      }
+    }
+  };
+
+
+  const PLATFORM_NAMES = {
+    xiaohongshu: "小红书",
+    zhihu: "知乎",
+    wechat: "微信公众号"
+  };
+
+
+  const STATUS_NAMES = {
+    running: "执行中",
+    waiting_direction: "等待选择方向",
+    waiting_review: "等待审核",
+    success: "已完成",
+    failed: "失败",
+    cancelled: "已取消"
+  };
+
+
+  const seedState = {
+
+    theme: "auto",
+
+    settings: {
+      defaultPlatforms:
+        "xiaohongshu,zhihu",
+
+      researchModel:
+        "researcher-default",
+
+      writerModel:
+        "writer-strong",
+
+      platformModel:
+        "platform-fast",
+
+      queries:
+        5,
+
+      limit:
+        1000,
+
+      interval:
+        1500
+    },
+
+
+    runs: [
+
+      {
+        id: "run_demo_1",
+
+        topic:
+          "Transformer 架构",
+
+        status:
+          "running",
+
+        directionMode:
+          "auto",
+
+        publishMode:
+          "auto",
+
+        platforms: [
+          "xiaohongshu",
+          "zhihu"
+        ],
+
+        created:
+          Date.now() - 120000,
+
+        current:
+          5,
+
+        events: []
+      },
+
+
+      {
+        id: "run_demo_2",
+
+        topic:
+          "RAG 技术实践",
+
+        status:
+          "success",
+
+        directionMode:
+          "auto",
+
+        publishMode:
+          "auto",
+
+        platforms: [
+          "xiaohongshu",
+          "zhihu"
+        ],
+
+        created:
+          Date.now() - 3600000,
+
+        current:
+          8,
+
+        events: []
+      },
+
+
+      {
+        id: "run_demo_3",
+
+        topic:
+          "智能体架构设计",
+
+        status:
+          "waiting_review",
+
+        directionMode:
+          "auto",
+
+        publishMode:
+          "review",
+
+        platforms: [
+          "xiaohongshu"
+        ],
+
+        created:
+          Date.now() - 10800000,
+
+        current:
+          7,
+
+        events: []
+      }
+
+    ],
+
+
+    drafts: [
+
+      {
+        id:
+          "draft_demo",
+
+        runId:
+          "run_demo_3",
+
+        title:
+          "AI Agent 到底应该怎么设计？",
+
+        platforms: [
+          "xiaohongshu"
+        ],
+
+        created:
+          Date.now() - 7200000,
+
+        selected:
+          "xiaohongshu",
+
+        versions: {
+
+          canonical: `
+            <h1>AI Agent 到底应该怎么设计？</h1>
+
+            <p>
+              这是一份平台无关的核心内容草稿。
+            </p>
+
+            <h2>核心观点</h2>
+
+            <p>
+              先把规划、工具调用、状态与恢复边界拆开，
+              再考虑智能程度。
+            </p>
+          `,
+
+          xiaohongshu: `
+            <h1>AI Agent 到底应该怎么设计？</h1>
+
+            <p>
+              很多 Agent 项目一开始就陷入了
+              多智能体和复杂规划。
+            </p>
+
+            <h2>真正应该先做什么？</h2>
+
+            <p>
+              先把工作流边界、状态、重试
+              和工具权限设计清楚。
+            </p>
+
+            <p>
+              #人工智能 #Agent #工程实践
+            </p>
+          `
+        }
+      }
+
+    ],
+
+
+    publishing: [
+
+      {
+        id:
+          "pub_1",
+
+        title:
+          "RAG 技术实践",
+
+        platform:
+          "xiaohongshu",
+
+        status:
+          "success",
+
+        attempt:
+          1,
+
+        remoteId:
+          "xhs_8A31F",
+
+        created:
+          Date.now() - 3400000
+      },
+
+
+      {
+        id:
+          "pub_2",
+
+        title:
+          "RAG 技术实践",
+
+        platform:
+          "zhihu",
+
+        status:
+          "success",
+
+        attempt:
+          1,
+
+        remoteId:
+          "zh_39214",
+
+        created:
+          Date.now() - 3300000
+      }
+
+    ]
+  };
+
+
+  let state =
+    StorageBox.get(
+      STORAGE_KEY,
+      seedState
+    );
+
+
+  state = {
+    ...seedState,
+    ...state,
+
+    settings: {
+      ...seedState.settings,
+      ...(state.settings || {})
+    }
+  };
+
+
+  let currentRunId = null;
+  let currentDraftId = null;
+  let confirmAction = null;
+
+  const timers = {};
+
+
+  /* =======================================================
+     DOM 工具
+     ======================================================= */
+
+  const $ =
+    selector =>
+      document.querySelector(selector);
+
+
+  const $$ =
+    selector =>
+      [
+        ...document.querySelectorAll(
+          selector
+        )
+      ];
+
+
+  function escapeHtml(value) {
+
+    return String(value ?? "")
+      .replace(
+        /[&<>"']/g,
+        char => {
+
+          if (char === "&") {
+            return "&amp;";
+          }
+
+          if (char === "<") {
+            return "&lt;";
+          }
+
+          if (char === ">") {
+            return "&gt;";
+          }
+
+          if (char === '"') {
+            return "&quot;";
+          }
+
+          return "&#39;";
+        }
+      );
+  }
+
+
+  function saveState() {
+
+    StorageBox.set(
+      STORAGE_KEY,
+      state
+    );
+
+    updateCounts();
+  }
+
+
+  function toast(message) {
+
+    const element =
+      $("#toast");
+
+    element.textContent =
+      message;
+
+    element.classList.add(
+      "show"
+    );
+
+    clearTimeout(
+      element._timer
+    );
+
+    element._timer =
+      setTimeout(
+        () => {
+          element.classList.remove(
+            "show"
+          );
+        },
+        2200
+      );
+  }
+
+
+  function formatTime(timestamp) {
+
+    const delta =
+      Date.now() - timestamp;
+
+    if (delta < 60000) {
+      return "刚刚";
+    }
+
+    if (delta < 3600000) {
+
+      return (
+        Math.floor(
+          delta / 60000
+        ) +
+        " 分钟前"
+      );
+    }
+
+    if (delta < 86400000) {
+
+      return (
+        Math.floor(
+          delta / 3600000
+        ) +
+        " 小时前"
+      );
+    }
+
+    return new Date(
+      timestamp
+    ).toLocaleDateString(
+      "zh-CN"
+    );
+  }
+
+
+  function makeId(prefix) {
+
+    return (
+      prefix +
+      "_" +
+      Date.now()
+        .toString(36) +
+      Math.random()
+        .toString(36)
+        .slice(2, 6)
+    );
+  }
+
+
+  function statusBadge(status) {
+
+    let cssClass =
+      "badge-running";
+
+    if (status === "success") {
+      cssClass =
+        "badge-success";
+    }
+
+    if (status === "failed") {
+      cssClass =
+        "badge-failed";
+    }
+
+    if (
+      status.startsWith(
+        "waiting"
+      )
+    ) {
+      cssClass =
+        "badge-waiting";
+    }
+
+    if (
+      status === "cancelled"
+    ) {
+      cssClass =
+        "badge-neutral";
+    }
+
+    return `
+      <span class="badge ${cssClass}">
+        ${STATUS_NAMES[status] || status}
+      </span>
+    `;
+  }
+
+
+  /* =======================================================
+     主题
+     ======================================================= */
+
+  const systemTheme =
+    window.matchMedia(
+      "(prefers-color-scheme: dark)"
+    );
+
+
+  function applyTheme(mode) {
+
+    state.theme = mode;
+
+    const isDark =
+      mode === "dark" ||
+      (
+        mode === "auto" &&
+        systemTheme.matches
+      );
+
+
+    document
+      .documentElement
+      .dataset
+      .theme =
+        isDark
+          ? "dark"
+          : "light";
+
+
+    $$(".theme")
+      .forEach(
+        button => {
+
+          button
+            .classList
+            .toggle(
+              "active",
+              button.dataset.theme === mode
+            );
+        }
+      );
+
+
+    saveState();
+  }
+
+
+  if (
+    typeof systemTheme
+      .addEventListener === "function"
+  ) {
+
+    systemTheme
+      .addEventListener(
+        "change",
+        () => {
+
+          if (
+            state.theme === "auto"
+          ) {
+            applyTheme("auto");
+          }
+        }
+      );
+  }
+
+
+  /* =======================================================
+     路由
+     ======================================================= */
+
+  const pageTitles = {
+
+    dashboard: [
+      "概览",
+      "内容生产与多平台发布"
+    ],
+
+    runs: [
+      "工作流",
+      "工作流 / 任务列表"
+    ],
+
+    "run-detail": [
+      "任务详情",
+      "工作流 / 任务详情"
+    ],
+
+    drafts: [
+      "草稿箱",
+      "草稿箱 / 待审核内容"
+    ],
+
+    "draft-editor": [
+      "草稿审核",
+      "草稿箱 / 编辑草稿"
+    ],
+
+    sources: [
+      "研究资料",
+      "研究 / 资料来源"
+    ],
+
+    publishing: [
+      "发布管理",
+      "发布 / 发布记录"
+    ],
+
+    settings: [
+      "系统设置",
+      "系统 / 设置"
+    ]
+  };
+
+
+  function navigate(page) {
+
+    $$(".page")
+      .forEach(
+        item => {
+          item.classList.remove(
+            "active"
+          );
+        }
+      );
+
+
+    const target =
+      $(
+        "#page-" + page
+      );
+
+    if (target) {
+      target.classList.add(
+        "active"
+      );
+    }
+
+
+    $$(".nav")
+      .forEach(
+        item => {
+
+          item.classList.toggle(
+            "active",
+            item.dataset.nav === page
+          );
+        }
+      );
+
+
+    $("#topName")
+      .textContent =
+        pageTitles[page]?.[0]
+        || "";
+
+
+    $("#crumb")
+      .textContent =
+        pageTitles[page]?.[1]
+        || "";
+
+
+    if (page === "dashboard") {
+      renderDashboard();
+    }
+
+    if (page === "runs") {
+      renderRuns();
+    }
+
+    if (page === "drafts") {
+      renderDrafts();
+    }
+
+    if (page === "publishing") {
+      renderPublishing();
+    }
+
+    if (page === "settings") {
+      renderSettings();
+    }
+
+    if (page === "sources") {
+      renderSources();
+    }
+
+
+    window.scrollTo(
+      0,
+      0
+    );
+  }
+
+
+  /* =======================================================
+     侧边栏计数
+     ======================================================= */
+
+  function updateCounts() {
+
+    $("#runCount")
+      .textContent =
+        state.runs
+          .filter(
+            run =>
+              ![
+                "success",
+                "cancelled"
+              ].includes(
+                run.status
+              )
+          )
+          .length;
+
+
+    $("#draftCount")
+      .textContent =
+        state.drafts.length;
+
+
+    $("#publishCount")
+      .textContent =
+        state.publishing
+          .filter(
+            item =>
+              item.status !==
+              "success"
+          )
+          .length;
+  }
+
+
+  /* =======================================================
+     概览
+     ======================================================= */
+
+  function statCard(
+    label,
+    value,
+    footer
+  ) {
+
+    return `
+      <div class="card stat">
+
+        <label>
+          ${label}
+        </label>
+
+        <b>
+          ${value}
+        </b>
+
+        <small>
+          ${footer}
+        </small>
+
+      </div>
+    `;
+  }
+
+
+  function usageRow(
+    label,
+    value,
+    width
+  ) {
+
+    return `
+      <div class="usage">
+
+        <div class="usage-head">
+          <b>${label}</b>
+          <span>${value}</span>
+        </div>
+
+        <div class="bar">
+          <i style="width:${width}%"></i>
+        </div>
+
+      </div>
+    `;
+  }
+
+
+  function renderDashboard() {
+
+    const completed =
+      state.runs
+        .filter(
+          run =>
+            run.status ===
+            "success"
+        )
+        .length;
+
+
+    const successRate =
+      state.runs.length
+        ? Math.round(
+            completed /
+            state.runs.length *
+            100
+          )
+        : 0;
+
+
+    $("#dashboardStats")
+      .innerHTML =
+
+        statCard(
+          "本月工作流",
+          state.runs.length,
+          "本地模拟任务"
+        )
+
+        +
+
+        statCard(
+          "任务完成率",
+          successRate + "%",
+          "按当前原型数据"
+        )
+
+        +
+
+        statCard(
+          "待审核草稿",
+          state.drafts.length,
+          "需要人工处理"
+        )
+
+        +
+
+        statCard(
+          "已发布内容",
+          state.publishing
+            .filter(
+              item =>
+                item.status ===
+                "success"
+            )
+            .length,
+          "发布成功记录"
+        );
+
+
+    $("#dashboardRecent")
+      .innerHTML =
+        renderRunTable(
+          state.runs
+            .slice()
+            .sort(
+              (a, b) =>
+                b.created -
+                a.created
+            )
+            .slice(
+              0,
+              5
+            )
+        );
+
+
+    $("#usage")
+      .innerHTML =
+
+        usageRow(
+          "Brave 搜索",
+          "327 / 1,000",
+          32.7
+        )
+
+        +
+
+        usageRow(
+          "模型 Token",
+          "182 万 / 500 万",
+          36
+        )
+
+        +
+
+        usageRow(
+          "内容发布",
+          state.publishing.length +
+          " / 200",
+          Math.min(
+            100,
+            state.publishing.length / 2
+          )
+        );
+  }
+
+
+  /* =======================================================
+     工作流列表
+     ======================================================= */
+
+  function renderRunTable(
+    runs
+  ) {
+
+    return `
+      <table>
+
+        <thead>
+          <tr>
+            <th>主题</th>
+            <th>状态</th>
+            <th>模式</th>
+            <th>平台</th>
+            <th>创建时间</th>
+          </tr>
+        </thead>
+
+        <tbody>
+
+          ${
+            runs
+              .map(
+                run => `
+
+                  <tr
+                    class="clickable"
+                    data-open-run="${run.id}">
+
+                    <td>
+
+                      <b>
+                        ${escapeHtml(
+                          run.topic
+                        )}
+                      </b>
+
+                      <div class="mono-id">
+                        ${run.id}
+                      </div>
+
+                    </td>
+
+                    <td>
+                      ${
+                        statusBadge(
+                          run.status
+                        )
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        run.directionMode
+                        === "manual"
+                          ? "人工选方向"
+                          : "自动选方向"
+                      }
+                      ·
+                      ${
+                        run.publishMode
+                        === "review"
+                          ? "人工审核"
+                          : "自动发布"
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        run.platforms
+                          .map(
+                            platform =>
+                              PLATFORM_NAMES[
+                                platform
+                              ]
+                          )
+                          .join(
+                            " · "
+                          )
+                      }
+                    </td>
+
+                    <td>
+                      ${
+                        formatTime(
+                          run.created
+                        )
+                      }
+                    </td>
+
+                  </tr>
+
+                `
+              )
+              .join("")
+            ||
+            `
+              <tr>
+                <td colspan="5">
+                  <div class="empty">
+                    暂无任务
+                  </div>
+                </td>
+              </tr>
+            `
+          }
+
+        </tbody>
+
+      </table>
+    `;
+  }
+
+
+  function renderRuns() {
+
+    const query =
+      $("#runSearch")
+        ?.value
+        ?.trim()
+        .toLowerCase()
+      || "";
+
+
+    const status =
+      $("#runFilter")
+        ?.value
+      || "all";
+
+
+    const runs =
+      state.runs
+        .filter(
+          run => {
+
+            const matchesQuery =
+              !query
+              ||
+              run.topic
+                .toLowerCase()
+                .includes(
+                  query
+                )
+              ||
+              run.id
+                .toLowerCase()
+                .includes(
+                  query
+                );
+
+
+            const matchesStatus =
+              status === "all"
+              ||
+              run.status === status;
+
+
+            return (
+              matchesQuery &&
+              matchesStatus
+            );
+          }
+        )
+        .sort(
+          (a, b) =>
+            b.created -
+            a.created
+        );
+
+
+    $("#runsTable")
+      .innerHTML =
+        renderRunTable(
+          runs
+        );
+  }
+
+
+  /* =======================================================
+     工作流详情 + SSE 模拟
+     ======================================================= */
+
+  const workflowSteps = [
+    "生成搜索词",
+    "搜索研究资料",
+    "分析研究资料",
+    "生成内容方向",
+    "选择内容方向",
+    "生成核心文章",
+    "生成平台版本",
+    "发布或进入审核",
+    "完成"
+  ];
+
+
+  function openRun(runId) {
+
+    currentRunId =
+      runId;
+
+    renderRunDetail();
+
+    navigate(
+      "run-detail"
+    );
+  }
+
+
+  function renderRunDetail() {
+
+    const run =
+      state.runs.find(
+        item =>
+          item.id ===
+          currentRunId
+      );
+
+
+    if (!run) {
+      navigate("runs");
+      return;
+    }
+
+
+    const steps =
+      workflowSteps
+        .map(
+          (
+            step,
+            index
+          ) => {
+
+            let cssClass =
+              "";
+
+
+            if (
+              index <
+              run.current
+            ) {
+              cssClass =
+                "done";
+            }
+
+
+            if (
+              index ===
+                run.current
+              &&
+              run.status ===
+                "running"
+            ) {
+              cssClass =
+                "running";
+            }
+
+
+            if (
+              index ===
+                run.current
+              &&
+              run.status ===
+                "waiting_direction"
+            ) {
+              cssClass =
+                "waiting";
+            }
+
+
+            return `
+              <div
+                class="step ${cssClass}">
+
+                <span class="step-dot">
+
+                  ${
+                    cssClass ===
+                    "done"
+                      ? "✓"
+                      : ""
+                  }
+
+                </span>
+
+                <div class="step-head">
+
+                  <span>
+                    ${step}
+                  </span>
+
+                  <span>
+
+                    ${
+                      index <
+                      run.current
+                        ? "完成"
+                        : ""
+                    }
+
+                  </span>
+
+                </div>
+
+                <div class="step-desc">
+
+                  ${
+                    index ===
+                    run.current
+
+                      ? (
+                          STATUS_NAMES[
+                            run.status
+                          ]
+                          ||
+                          "等待执行"
+                        )
+
+                      : (
+                          index <
+                          run.current
+
+                            ? "步骤已完成"
+
+                            : "等待执行"
+                        )
+                  }
+
+                </div>
+
+              </div>
+            `;
+          }
+        )
+        .join("");
+
+
+    let directionPanel =
+      "";
+
+
+    if (
+      run.status ===
+      "waiting_direction"
+    ) {
+
+      const directions = [
+        "从 RNN 瓶颈理解 Transformer",
+        "一篇搞懂自注意力机制",
+        "Transformer 工程化与扩展"
+      ];
+
+
+      directionPanel = `
+        <div class="direction-box">
+
+          <b>
+            请选择一个内容方向
+          </b>
+
+          <p
+            style="
+              font-size:9px;
+              color:var(--text2)
+            ">
+
+            选择后工作流会从当前检查点继续。
+
+          </p>
+
+          <div class="direction-grid">
+
+            ${
+              directions
+                .map(
+                  (
+                    title,
+                    index
+                  ) => `
+
+                    <button
+                      class="direction-option"
+                      type="button"
+                      data-direction="${index}">
+
+                      <b>
+                        ${title}
+                      </b>
+
+                      <div
+                        style="
+                          margin-top:4px;
+                          color:var(--text3);
+                          font-size:8px
+                        ">
+
+                        候选方向
+                        ${index + 1}
+                        · 基于模拟研究结果
+
+                      </div>
+
+                    </button>
+                  `
+                )
+                .join("")
+            }
+
+          </div>
+
+        </div>
+      `;
+    }
+
+
+    $("#runDetail")
+      .innerHTML = `
+
+        <div class="card run-hero">
+
+          <div class="run-row">
+
+            <div>
+
+              <div class="run-title">
+
+                ${
+                  escapeHtml(
+                    run.topic
+                  )
+                }
+
+                ${
+                  statusBadge(
+                    run.status
+                  )
+                }
+
+              </div>
+
+              <div class="run-meta">
+
+                <span>
+                  任务编号
+                  <b>${run.id}</b>
+                </span>
+
+                <span>
+                  方向
+                  <b>
+                    ${
+                      run.directionMode
+                      === "manual"
+                        ? "人工选择"
+                        : "自动选择"
+                    }
+                  </b>
+                </span>
+
+                <span>
+                  发布
+                  <b>
+                    ${
+                      run.publishMode
+                      === "review"
+                        ? "人工审核"
+                        : "自动发布"
+                    }
+                  </b>
+                </span>
+
+                <span>
+                  平台
+                  <b>
+                    ${
+                      run.platforms
+                        .map(
+                          platform =>
+                            PLATFORM_NAMES[
+                              platform
+                            ]
+                        )
+                        .join(
+                          " / "
+                        )
+                    }
+                  </b>
+                </span>
+
+              </div>
+
+            </div>
+
+
+            <div class="actions">
+
+              <button
+                class="btn"
+                type="button"
+                data-retry-run="${run.id}">
+
+                <span
+                  class="fa i-retry"
+                  aria-hidden="true">
+                </span>
+
+                重试
+
+              </button>
+
+
+              <button
+                class="btn danger"
+                type="button"
+                data-cancel-run="${run.id}">
+
+                取消任务
+
+              </button>
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <div class="run-layout">
+
+          <div class="card">
+
+            <div class="card-header">
+
+              <div>
+
+                <div class="card-title">
+                  执行过程
+                </div>
+
+                <div class="card-subtitle">
+                  定时器模拟 SSE 实时事件
+                </div>
+
+              </div>
+
+              ${
+                statusBadge(
+                  run.status
+                )
+              }
+
+            </div>
+
+            <div>
+              ${steps}
+            </div>
+
+            ${directionPanel}
+
+          </div>
+
+
+          <div>
+
+            <div class="card">
+
+              <div class="card-header">
+                <div class="card-title">
+                  执行统计
+                </div>
+              </div>
+
+              <div class="metric">
+
+                <small>
+                  当前步骤
+                </small>
+
+                <b>
+                  ${
+                    Math.min(
+                      run.current + 1,
+                      workflowSteps.length
+                    )
+                  }
+                  /
+                  ${workflowSteps.length}
+                </b>
+
+              </div>
+
+              <div class="metric">
+
+                <small>
+                  研究资料
+                </small>
+
+                <b>26</b>
+
+              </div>
+
+              <div class="metric">
+
+                <small>
+                  模型 Token
+                </small>
+
+                <b>
+                  ${
+                    12000 +
+                    run.current *
+                    3400
+                  }
+                </b>
+
+              </div>
+
+            </div>
+
+
+            <div
+              class="card"
+              style="margin-top:14px">
+
+              <div class="card-header">
+                <div class="card-title">
+                  实时事件
+                </div>
+              </div>
+
+              <div class="events">
+
+                ${
+                  (
+                    run.events
+                    || []
+                  )
+                    .slice()
+                    .reverse()
+                    .map(
+                      event => `
+
+                        <div class="event">
+
+                          <time>
+                            ${event.time}
+                          </time>
+
+                          <div>
+                            ${
+                              escapeHtml(
+                                event.message
+                              )
+                            }
+                          </div>
+
+                        </div>
+                      `
+                    )
+                    .join("")
+                  ||
+                  `
+                    <div class="empty">
+                      等待事件
+                    </div>
+                  `
+                }
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+      `;
+  }
+
+
+  function pushRunEvent(
+    run,
+    message
+  ) {
+
+    run.events =
+      run.events || [];
+
+
+    run.events.push({
+
+      time:
+        new Date()
+          .toLocaleTimeString(
+            "zh-CN",
+            {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit"
+            }
+          ),
+
+      message
+    });
+
+
+    if (
+      run.events.length >
+      30
+    ) {
+      run.events.shift();
+    }
+
+
+    saveState();
+
+
+    if (
+      currentRunId ===
+        run.id
+      &&
+      $("#page-run-detail")
+        .classList
+        .contains(
+          "active"
+        )
+    ) {
+      renderRunDetail();
+    }
+  }
+
+
+  function startWorkflow(
+    run
+  ) {
+
+    clearTimeout(
+      timers[run.id]
+    );
+
+
+    if (
+      run.status !==
+      "running"
+    ) {
+      return;
+    }
+
+
+    const interval =
+      Math.max(
+        500,
+        Number(
+          state.settings
+            .interval
+        )
+        ||
+        1500
+      );
+
+
+    timers[run.id] =
+      setTimeout(
+        () => {
+
+          /* 人工选择方向暂停 */
+
+          if (
+            run.directionMode ===
+              "manual"
+            &&
+            run.current ===
+              4
+            &&
+            !run.direction
+          ) {
+
+            run.status =
+              "waiting_direction";
+
+
+            pushRunEvent(
+              run,
+              "等待人工选择内容方向"
+            );
+
+
+            saveState();
+            renderCurrentPages();
+
+            return;
+          }
+
+
+          run.current++;
+
+
+          pushRunEvent(
+            run,
+            "完成：" +
+            workflowSteps[
+              Math.max(
+                0,
+                run.current - 1
+              )
+            ]
+          );
+
+
+          /*
+           * 平台版本生成完成。
+           * 人工审核 -> 草稿箱
+           * 自动发布 -> 发布队列
+           */
+
+          if (
+            run.current >=
+            7
+          ) {
+
+            if (
+              run.publishMode ===
+              "review"
+            ) {
+
+              createDraftFromRun(
+                run
+              );
+
+
+              run.status =
+                "waiting_review";
+
+
+              pushRunEvent(
+                run,
+                "平台内容已进入草稿箱，等待人工审核"
+              );
+
+            } else {
+
+              createPublishingFromRun(
+                run
+              );
+
+
+              run.status =
+                "success";
+
+
+              run.current =
+                8;
+
+
+              pushRunEvent(
+                run,
+                "平台内容已加入发布队列"
+              );
+            }
+
+
+            saveState();
+            renderCurrentPages();
+
+            return;
+          }
+
+
+          saveState();
+          renderCurrentPages();
+
+          startWorkflow(
+            run
+          );
+
+        },
+        interval
+      );
+  }
+
+
+  /* =======================================================
+     工作流 -> 草稿
+     ======================================================= */
+
+  function createDraftFromRun(
+    run
+  ) {
+
+    if (
+      state.drafts.some(
+        draft =>
+          draft.runId ===
+          run.id
+      )
+    ) {
+      return;
+    }
+
+
+    const title =
+      run.direction ||
+      run.topic;
+
+
+    const canonical = `
+      <h1>
+        ${escapeHtml(title)}
+      </h1>
+
+      <p>
+        这是围绕“
+        ${escapeHtml(run.topic)}
+        ”生成的核心文章草稿。
+      </p>
+
+      <h2>
+        背景与问题
+      </h2>
+
+      <p>
+        系统已模拟完成搜索、资料归纳和结构化写作。
+      </p>
+
+      <h2>
+        核心观点
+      </h2>
+
+      <p>
+        这里用于展示平台无关的母版内容，
+        实际系统可携带引用与事实来源。
+      </p>
+    `;
+
+
+    const versions = {
+      canonical
+    };
+
+
+    for (
+      const platform
+      of run.platforms
+    ) {
+
+      if (
+        platform ===
+        "xiaohongshu"
+      ) {
+
+        versions[
+          platform
+        ] = `
+          <h1>
+            ${escapeHtml(title)}
+          </h1>
+
+          <p>
+            用更轻量的方式拆解这个技术主题。
+          </p>
+
+          <h2>
+            先看核心问题
+          </h2>
+
+          <p>
+            把复杂概念拆成可以快速理解的结构。
+          </p>
+
+          <p>
+            #技术 #人工智能 #工程实践
+          </p>
+        `;
+
+      } else if (
+        platform ===
+        "zhihu"
+      ) {
+
+        versions[
+          platform
+        ] = `
+          <h1>
+            ${escapeHtml(title)}
+          </h1>
+
+          <p>
+            理解这个主题，
+            应该先从它解决的问题开始。
+          </p>
+
+          <h2>
+            背景
+          </h2>
+
+          <p>
+            下面从原理、工程约束和实践价值
+            三个角度展开。
+          </p>
+
+          <h2>
+            结论
+          </h2>
+
+          <p>
+            重点不是记忆术语，
+            而是理解设计取舍。
+          </p>
+        `;
+
+      } else {
+
+        versions[
+          platform
+        ] = `
+          <h1>
+            ${escapeHtml(title)}
+          </h1>
+
+          <p>
+            本文从背景、核心原理和实践建议
+            三个方面展开。
+          </p>
+
+          <h2>
+            核心结论
+          </h2>
+
+          <p>
+            保持结构清晰，
+            并为读者提供可执行的理解路径。
+          </p>
+        `;
+      }
+    }
+
+
+    state.drafts.unshift({
+
+      id:
+        makeId(
+          "draft"
+        ),
+
+      runId:
+        run.id,
+
+      title,
+
+      platforms:
+        run.platforms,
+
+      created:
+        Date.now(),
+
+      selected:
+        run.platforms[0],
+
+      versions
+    });
+  }
+
+
+  /* =======================================================
+     工作流 -> 发布队列
+     ======================================================= */
+
+  function createPublishingFromRun(
+    run,
+    titleOverride
+  ) {
+
+    for (
+      const platform
+      of run.platforms
+    ) {
+
+      state.publishing.unshift({
+
+        id:
+          makeId(
+            "pub"
+          ),
+
+        runId:
+          run.id,
+
+        title:
+          titleOverride
+          ||
+          run.direction
+          ||
+          run.topic,
+
+        platform,
+
+        status:
+          "queued",
+
+        attempt:
+          0,
+
+        remoteId:
+          "",
+
+        created:
+          Date.now()
+      });
+    }
+  }
+
+
+  /* =======================================================
+     草稿箱
+     ======================================================= */
+
+  function renderDrafts() {
+
+    const query =
+      $("#draftSearch")
+        ?.value
+        ?.trim()
+        .toLowerCase()
+      || "";
+
+
+    const platform =
+      $("#draftPlatform")
+        ?.value
+      || "all";
+
+
+    const drafts =
+      state.drafts
+        .filter(
+          draft => {
+
+            const matchText =
+              !query
+              ||
+              draft.title
+                .toLowerCase()
+                .includes(
+                  query
+                )
+              ||
+              draft.runId
+                .toLowerCase()
+                .includes(
+                  query
+                );
+
+
+            const matchPlatform =
+              platform === "all"
+              ||
+              draft.platforms
+                .includes(
+                  platform
+                );
+
+
+            return (
+              matchText &&
+              matchPlatform
+            );
+          }
+        );
+
+
+    $("#draftStats")
+      .innerHTML =
+
+        statCard(
+          "待审核",
+          state.drafts.length,
+          "人工审核任务"
+        )
+
+        +
+
+        statCard(
+          "今日生成",
+
+          state.drafts
+            .filter(
+              draft =>
+                Date.now() -
+                draft.created <
+                86400000
+            )
+            .length,
+
+          "最近 24 小时"
+        )
+
+        +
+
+        statCard(
+          "待发布",
+
+          state.publishing
+            .filter(
+              item =>
+                item.status ===
+                "queued"
+            )
+            .length,
+
+          "审核通过后进入队列"
+        )
+
+        +
+
+        statCard(
+          "发布失败",
+
+          state.publishing
+            .filter(
+              item =>
+                item.status ===
+                "failed"
+            )
+            .length,
+
+          "可在发布管理重试"
+        );
+
+
+    $("#draftTable")
+      .innerHTML = `
+
+        <table>
+
+          <thead>
+            <tr>
+              <th>内容主题</th>
+              <th>目标平台</th>
+              <th>状态</th>
+              <th>生成时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+
+          <tbody>
+
+            ${
+              drafts
+                .map(
+                  draft => `
+
+                    <tr
+                      class="clickable"
+                      data-open-draft="${draft.id}">
+
+                      <td>
+
+                        <b>
+                          ${
+                            escapeHtml(
+                              draft.title
+                            )
+                          }
+                        </b>
+
+                        <div class="mono-id">
+                          ${draft.runId}
+                        </div>
+
+                      </td>
+
+                      <td>
+                        ${
+                          draft.platforms
+                            .map(
+                              item =>
+                                PLATFORM_NAMES[
+                                  item
+                                ]
+                            )
+                            .join(
+                              " · "
+                            )
+                        }
+                      </td>
+
+                      <td>
+
+                        <span class="badge badge-waiting">
+                          待人工审核
+                        </span>
+
+                      </td>
+
+                      <td>
+                        ${
+                          formatTime(
+                            draft.created
+                          )
+                        }
+                      </td>
+
+                      <td>
+
+                        <button
+                          class="btn small"
+                          type="button"
+                          data-open-draft="${draft.id}">
+
+                          <span
+                            class="fa i-draft"
+                            aria-hidden="true">
+                          </span>
+
+                          审核编辑
+
+                        </button>
+
+                      </td>
+
+                    </tr>
+
+                  `
+                )
+                .join("")
+              ||
+              `
+                <tr>
+                  <td colspan="5">
+                    <div class="empty">
+                      没有符合条件的草稿
+                    </div>
+                  </td>
+                </tr>
+              `
+            }
+
+          </tbody>
+
+        </table>
+      `;
+  }
+
+
+  /* =======================================================
+     草稿编辑
+     ======================================================= */
+
+  function openDraft(
+    draftId
+  ) {
+
+    currentDraftId =
+      draftId;
+
+    renderDraftEditor();
+
+    navigate(
+      "draft-editor"
+    );
+  }
+
+
+  function renderDraftEditor() {
+
+    const draft =
+      state.drafts.find(
+        item =>
+          item.id ===
+          currentDraftId
+      );
+
+
+    if (!draft) {
+      navigate("drafts");
+      return;
+    }
+
+
+    const versionKeys = [
+      "canonical",
+      ...draft.platforms
+    ];
+
+
+    const names = {
+      canonical:
+        "核心文章",
+
+      ...PLATFORM_NAMES
+    };
+
+
+    $("#draftEditorPage")
+      .innerHTML = `
+
+        <div class="page-header">
+
+          <div>
+
+            <button
+              class="btn small"
+              type="button"
+              data-go="drafts">
+
+              <span
+                class="fa i-back"
+                aria-hidden="true">
+              </span>
+
+              返回草稿箱
+
+            </button>
+
+            <h1
+              style="margin-top:12px">
+
+              ${
+                escapeHtml(
+                  draft.title
+                )
+              }
+
+            </h1>
+
+            <p>
+              人工审核
+              ·
+              ${
+                draft.platforms
+                  .map(
+                    platform =>
+                      PLATFORM_NAMES[
+                        platform
+                      ]
+                  )
+                  .join(
+                    " / "
+                  )
+              }
+              ·
+              ${
+                formatTime(
+                  draft.created
+                )
+              }
+            </p>
+
+          </div>
+
+
+          <div class="actions">
+
+            <button
+              class="btn"
+              type="button"
+              id="saveDraft">
+
+              <span
+                class="fa i-save"
+                aria-hidden="true">
+              </span>
+
+              保存草稿
+
+            </button>
+
+
+            <button
+              class="btn primary"
+              type="button"
+              id="approveDraft">
+
+              <span
+                class="fa i-check"
+                aria-hidden="true">
+              </span>
+
+              审核通过并发布
+
+            </button>
+
+          </div>
+
+        </div>
+
+
+        <div class="editor-layout">
+
+          <!-- 内容版本 -->
+
+          <div class="card">
+
+            <div class="card-header">
+
+              <div class="card-title">
+                内容版本
+              </div>
+
+            </div>
+
+            <div class="versions">
+
+              ${
+                versionKeys
+                  .map(
+                    key => `
+
+                      <div
+                        class="
+                          version
+                          ${
+                            draft.selected ===
+                            key
+                              ? "active"
+                              : ""
+                          }
+                        "
+                        data-version="${key}">
+
+                        <b>
+                          ${names[key]}
+                        </b>
+
+                        <small>
+
+                          ${
+                            key ===
+                            "canonical"
+                              ? "平台无关母版"
+                              : "待审核平台版本"
+                          }
+
+                        </small>
+
+                      </div>
+
+                    `
+                  )
+                  .join("")
+              }
+
+            </div>
+
+          </div>
+
+
+          <!-- 编辑器 -->
+
+          <div class="card">
+
+            <div class="toolbar">
+
+              <button
+                class="tool"
+                type="button"
+                data-command="bold"
+                title="加粗"
+                aria-label="加粗">
+
+                <span
+                  class="fa i-bold"
+                  aria-hidden="true">
+                </span>
+
+              </button>
+
+              <button
+                class="tool"
+                type="button"
+                data-command="italic"
+                title="斜体"
+                aria-label="斜体">
+
+                <span
+                  class="fa i-italic"
+                  aria-hidden="true">
+                </span>
+
+              </button>
+
+              <button
+                class="tool"
+                type="button"
+                data-block="h2"
+                title="二级标题"
+                aria-label="二级标题">
+
+                <span
+                  class="fa i-heading"
+                  aria-hidden="true">
+                </span>
+
+              </button>
+
+              <button
+                class="tool"
+                type="button"
+                data-command="insertUnorderedList"
+                title="无序列表"
+                aria-label="无序列表">
+
+                <span
+                  class="fa i-list"
+                  aria-hidden="true">
+                </span>
+
+              </button>
+
+              <button
+                class="tool"
+                type="button"
+                data-block="blockquote"
+                title="引用"
+                aria-label="引用">
+
+                <span
+                  class="fa i-quote"
+                  aria-hidden="true">
+                </span>
+
+              </button>
+
+
+              <span
+                class="autosave"
+                id="autoSaveState">
+
+                <span
+                  class="fa i-clock"
+                  aria-hidden="true">
+                </span>
+
+                自动保存已开启
+
+              </span>
+
+            </div>
+
+
+            <article
+              class="editor"
+              id="editor"
+              contenteditable="true">
+
+              ${
+                draft.versions[
+                  draft.selected
+                ]
+                ||
+                ""
+              }
+
+            </article>
+
+          </div>
+
+
+          <!-- 平台预览 -->
+
+          <div class="card preview-card">
+
+            <div class="card-header">
+
+              <div>
+
+                <div class="card-title">
+                  发布预览
+                </div>
+
+                <div
+                  class="card-subtitle"
+                  id="previewName">
+                </div>
+
+              </div>
+
+            </div>
+
+            <div
+              class="preview"
+              id="preview">
+            </div>
+
+          </div>
+
+        </div>
+      `;
+
+
+    renderPreview();
+  }
+
+
+  function commitDraft(
+    showMessage = false
+  ) {
+
+    const draft =
+      state.drafts.find(
+        item =>
+          item.id ===
+          currentDraftId
+      );
+
+
+    const editor =
+      $("#editor");
+
+
+    if (
+      !draft ||
+      !editor
+    ) {
+      return;
+    }
+
+
+    draft.versions[
+      draft.selected
+    ] =
+      editor.innerHTML;
+
+
+    saveState();
+
+    renderPreview();
+
+
+    if (showMessage) {
+      toast(
+        "草稿已保存"
+      );
+    }
+  }
+
+
+  function renderPreview() {
+
+    const draft =
+      state.drafts.find(
+        item =>
+          item.id ===
+          currentDraftId
+      );
+
+
+    if (!draft) {
+      return;
+    }
+
+
+    const html =
+      draft.versions[
+        draft.selected
+      ]
+      ||
+      "";
+
+
+    $("#previewName")
+      .textContent =
+        draft.selected ===
+          "canonical"
+          ? "核心文章"
+          : PLATFORM_NAMES[
+              draft.selected
+            ];
+
+
+    $("#preview")
+      .innerHTML = `
+
+        <div class="phone">
+
+          <div class="phone-screen">
+
+            <div class="phone-top">
+
+              ${
+                draft.selected ===
+                "canonical"
+
+                  ? "核心内容预览"
+
+                  : (
+                      PLATFORM_NAMES[
+                        draft.selected
+                      ]
+                      +
+                      "内容预览"
+                    )
+              }
+
+            </div>
+
+
+            <div class="preview-cover">
+
+              <small>
+
+                ${
+                  draft.selected ===
+                  "xiaohongshu"
+
+                    ? "技术图解"
+
+                    : "内容预览"
+                }
+
+              </small>
+
+              <strong>
+
+                ${
+                  escapeHtml(
+                    draft.title
+                  )
+                }
+
+              </strong>
+
+            </div>
+
+
+            <div class="preview-body">
+              ${html}
+            </div>
+
+          </div>
+
+        </div>
+      `;
+  }
+
+
+  function approveCurrentDraft() {
+
+    const draft =
+      state.drafts.find(
+        item =>
+          item.id ===
+          currentDraftId
+      );
+
+
+    if (!draft) {
+      return;
+    }
+
+
+    commitDraft();
+
+
+    openConfirm(
+
+      "确认审核通过？",
+
+      "通过后该草稿会从草稿箱移除，并为每个目标平台创建发布任务。",
+
+      () => {
+
+        state.drafts =
+          state.drafts.filter(
+            item =>
+              item.id !==
+              draft.id
+          );
+
+
+        const run =
+          state.runs.find(
+            item =>
+              item.id ===
+              draft.runId
+          );
+
+
+        if (run) {
+
+          run.status =
+            "success";
+
+          run.current =
+            8;
+
+
+          pushRunEvent(
+            run,
+            "人工审核通过，已加入发布队列"
+          );
+        }
+
+
+        for (
+          const platform
+          of draft.platforms
+        ) {
+
+          state.publishing.unshift({
+
+            id:
+              makeId(
+                "pub"
+              ),
+
+            runId:
+              draft.runId,
+
+            title:
+              draft.title,
+
+            platform,
+
+            status:
+              "queued",
+
+            attempt:
+              0,
+
+            remoteId:
+              "",
+
+            created:
+              Date.now()
+          });
+        }
+
+
+        saveState();
+
+
+        toast(
+          "审核通过，已加入发布队列"
+        );
+
+
+        navigate(
+          "publishing"
+        );
+      }
+    );
+  }
+
+
+  /* =======================================================
+     发布管理
+     ======================================================= */
+
+  function renderPublishing() {
+
+    const queued =
+      state.publishing
+        .filter(
+          item =>
+            item.status ===
+            "queued"
+        )
+        .length;
+
+
+    const success =
+      state.publishing
+        .filter(
+          item =>
+            item.status ===
+            "success"
+        )
+        .length;
+
+
+    const failed =
+      state.publishing
+        .filter(
+          item =>
+            item.status ===
+            "failed"
+        )
+        .length;
+
+
+    $("#publishingStats")
+      .innerHTML =
+
+        statCard(
+          "等待发布",
+          queued,
+          "发布队列"
+        )
+
+        +
+
+        statCard(
+          "已发布",
+          success,
+          "成功记录"
+        )
+
+        +
+
+        statCard(
+          "发布失败",
+          failed,
+          "可重试"
+        )
+
+        +
+
+        statCard(
+          "目标平台",
+
+          new Set(
+            state.publishing
+              .map(
+                item =>
+                  item.platform
+              )
+          ).size,
+
+          "已有发布任务的平台"
+        );
+
+
+    $("#publishingTable")
+      .innerHTML = `
+
+        <table>
+
+          <thead>
+            <tr>
+              <th>内容</th>
+              <th>平台</th>
+              <th>状态</th>
+              <th>尝试</th>
+              <th>平台编号</th>
+              <th>时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+
+          <tbody>
+
+            ${
+              state.publishing
+                .map(
+                  item => `
+
+                    <tr>
+
+                      <td>
+                        ${
+                          escapeHtml(
+                            item.title
+                          )
+                        }
+                      </td>
+
+                      <td>
+                        ${
+                          PLATFORM_NAMES[
+                            item.platform
+                          ]
+                        }
+                      </td>
+
+                      <td>
+
+                        ${
+                          item.status ===
+                          "success"
+
+                            ? `
+                              <span class="badge badge-success">
+                                已发布
+                              </span>
+                            `
+
+                            : (
+                                item.status ===
+                                "failed"
+
+                                  ? `
+                                    <span class="badge badge-failed">
+                                      发布失败
+                                    </span>
+                                  `
+
+                                  : `
+                                    <span class="badge badge-running">
+                                      等待发布
+                                    </span>
+                                  `
+                              )
+                        }
+
+                      </td>
+
+                      <td>
+                        ${item.attempt}
+                      </td>
+
+                      <td class="mono-id">
+                        ${
+                          item.remoteId
+                          ||
+                          "—"
+                        }
+                      </td>
+
+                      <td>
+                        ${
+                          formatTime(
+                            item.created
+                          )
+                        }
+                      </td>
+
+                      <td>
+
+                        ${
+                          item.status ===
+                          "failed"
+
+                            ? `
+                              <button
+                                class="btn small"
+                                type="button"
+                                data-retry-publish="${item.id}">
+
+                                <span
+                                  class="fa i-retry"
+                                  aria-hidden="true">
+                                </span>
+
+                                重试
+
+                              </button>
+                            `
+
+                            : "—"
+                        }
+
+                      </td>
+
+                    </tr>
+                  `
+                )
+                .join("")
+              ||
+              `
+                <tr>
+                  <td colspan="7">
+
+                    <div class="empty">
+                      暂无发布记录
+                    </div>
+
+                  </td>
+                </tr>
+              `
+            }
+
+          </tbody>
+
+        </table>
+      `;
+  }
+
+
+  function processPublishQueue() {
+
+    const items =
+      state.publishing
+        .filter(
+          item =>
+            item.status ===
+            "queued"
+        );
+
+
+    if (!items.length) {
+
+      toast(
+        "当前没有等待发布任务"
+      );
+
+      return;
+    }
+
+
+    items.forEach(
+      (
+        item,
+        index
+      ) => {
+
+        setTimeout(
+          () => {
+
+            item.attempt++;
+
+
+            item.status =
+              Math.random() <
+              0.9
+
+                ? "success"
+
+                : "failed";
+
+
+            item.remoteId =
+              item.status ===
+              "success"
+
+                ? (
+                    item.platform
+                      .slice(
+                        0,
+                        2
+                      )
+                    +
+                    "_"
+                    +
+                    Math.random()
+                      .toString(36)
+                      .slice(
+                        2,
+                        8
+                      )
+                  )
+
+                : "";
+
+
+            saveState();
+            renderPublishing();
+
+
+            toast(
+              item.status ===
+              "success"
+
+                ? (
+                    PLATFORM_NAMES[
+                      item.platform
+                    ]
+                    +
+                    "发布成功"
+                  )
+
+                : (
+                    PLATFORM_NAMES[
+                      item.platform
+                    ]
+                    +
+                    "发布失败，可重试"
+                  )
+            );
+
+          },
+          500 +
+          index * 600
+        );
+      }
+    );
+  }
+
+
+  /* =======================================================
+     研究资料
+     ======================================================= */
+
+  const sourceData = [
+
+    [
+      "论文",
+      "Attention Is All You Need",
+      "Transformer 原始论文，用于说明注意力架构与多头注意力。",
+      "98%"
+    ],
+
+    [
+      "官方文档",
+      "Transformer 架构概览",
+      "模拟官方文档来源，用于解释编码器、解码器和位置编码。",
+      "94%"
+    ],
+
+    [
+      "技术文章",
+      "如何理解自注意力机制",
+      "模拟技术文章来源，用于解释 Query、Key、Value。",
+      "91%"
+    ],
+
+    [
+      "论文",
+      "大规模 Transformer 扩展",
+      "模拟研究来源，用于讨论并行能力和扩展性。",
+      "89%"
+    ],
+
+    [
+      "参考资料",
+      "多头注意力机制详解",
+      "模拟参考来源，用于解释不同表示子空间。",
+      "87%"
+    ],
+
+    [
+      "技术文章",
+      "Transformer 与循环神经网络对比",
+      "模拟对比来源，用于并行计算与长距离依赖分析。",
+      "84%"
+    ]
+  ];
+
+
+  function renderSources() {
+
+    $("#sourcesGrid")
+      .innerHTML =
+        sourceData
+          .map(
+            (
+              source,
+              index
+            ) => `
+
+              <article class="card source">
+
+                <div class="source-type">
+                  ${source[0]}
+                </div>
+
+                <h3>
+                  ${source[1]}
+                </h3>
+
+                <p>
+                  ${source[2]}
+                </p>
+
+                <footer>
+
+                  <span>
+                    相关度
+                    ${source[3]}
+                  </span>
+
+                  <span>
+                    资料
+                    ${
+                      String(
+                        index + 1
+                      )
+                      .padStart(
+                        3,
+                        "0"
+                      )
+                    }
+                  </span>
+
+                </footer>
+
+              </article>
+            `
+          )
+          .join("");
+  }
+
+
+  /* =======================================================
+     设置
+     ======================================================= */
+
+  function renderSettings() {
+
+    $("#settingsPanels")
+      .innerHTML = `
+
+        <div
+          class="settings-panel active"
+          data-settings-panel="general">
+
+          <div class="settings-section">
+
+            <h3>
+              基础设置
+            </h3>
+
+            <p class="card-subtitle">
+              原型设置保存在本地。
+            </p>
+
+            <div class="form-row">
+
+              <label for="setPlatforms">
+                默认发布平台
+              </label>
+
+              <select
+                class="input"
+                id="setPlatforms">
+
+                <option value="xiaohongshu,zhihu">
+                  小红书 + 知乎
+                </option>
+
+                <option value="xiaohongshu">
+                  仅小红书
+                </option>
+
+                <option value="zhihu">
+                  仅知乎
+                </option>
+
+                <option value="xiaohongshu,zhihu,wechat">
+                  小红书 + 知乎 + 微信公众号
+                </option>
+
+              </select>
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <div
+          class="settings-panel"
+          data-settings-panel="models">
+
+          <div class="settings-section">
+
+            <h3>
+              模型配置
+            </h3>
+
+            <div class="form-row">
+
+              <label for="setResearch">
+                研究模型
+              </label>
+
+              <input
+                class="input"
+                id="setResearch">
+
+            </div>
+
+            <div class="form-row">
+
+              <label for="setWriter">
+                文章生成模型
+              </label>
+
+              <input
+                class="input"
+                id="setWriter">
+
+            </div>
+
+            <div class="form-row">
+
+              <label for="setPlatformModel">
+                平台改写模型
+              </label>
+
+              <input
+                class="input"
+                id="setPlatformModel">
+
+            </div>
+
+            <div class="notice">
+              真实密钥只应由服务端 Secret 管理，
+              本原型不存储 API Key。
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <div
+          class="settings-panel"
+          data-settings-panel="search">
+
+          <div class="settings-section">
+
+            <h3>
+              Brave 搜索
+            </h3>
+
+            <div class="form-row">
+
+              <label for="setQueries">
+                每次任务搜索次数
+              </label>
+
+              <input
+                class="input"
+                type="number"
+                id="setQueries">
+
+            </div>
+
+            <div class="form-row">
+
+              <label for="setLimit">
+                每月请求上限
+              </label>
+
+              <input
+                class="input"
+                type="number"
+                id="setLimit">
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <div
+          class="settings-panel"
+          data-settings-panel="publish">
+
+          <div class="settings-section">
+
+            <h3>
+              发布服务
+            </h3>
+
+            <div class="form-row">
+
+              <span>
+                小红书发布服务
+              </span>
+
+              <span class="badge badge-success">
+                已连接
+              </span>
+
+            </div>
+
+            <div class="form-row">
+
+              <span>
+                知乎发布服务
+              </span>
+
+              <span class="badge badge-success">
+                已连接
+              </span>
+
+            </div>
+
+            <div class="form-row">
+
+              <span>
+                微信公众号发布服务
+              </span>
+
+              <span class="badge badge-neutral">
+                未启用
+              </span>
+
+            </div>
+
+            <div class="notice">
+              生产占位：
+              TypeScript MCP Client
+              →
+              PublisherAdapter
+              →
+              各平台 MCP。
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <div
+          class="settings-panel"
+          data-settings-panel="workflow">
+
+          <div class="settings-section">
+
+            <h3>
+              工作流配置
+            </h3>
+
+            <div class="form-row">
+
+              <label for="setInterval">
+                步骤模拟间隔（毫秒）
+              </label>
+
+              <input
+                class="input"
+                type="number"
+                min="500"
+                id="setInterval">
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <div
+          class="settings-panel"
+          data-settings-panel="scheduler">
+
+          <div class="settings-section">
+
+            <h3>
+              外部调度接口
+            </h3>
+
+            <p class="card-subtitle">
+              Nacos + curl 执行器在真实系统中调用；
+              此原型不会发送网络请求。
+            </p>
+
+            <div class="code">POST /api/v1/runs
+
+{
+  "topic": "Transformer 架构",
+  "directionMode": "auto",
+  "publishMode": "review",
+  "platforms": [
+    "xiaohongshu",
+    "zhihu"
+  ]
+}</div>
+
+            <div
+              class="actions"
+              style="margin-top:10px">
+
+              <button
+                class="btn"
+                type="button"
+                id="copyApi">
+
+                <span
+                  class="fa i-copy"
+                  aria-hidden="true">
+                </span>
+
+                复制示例
+
+              </button>
+
+              <button
+                class="btn primary"
+                type="button"
+                id="mockPost">
+
+                <span
+                  class="fa i-play"
+                  aria-hidden="true">
+                </span>
+
+                模拟 POST 调用
+
+              </button>
+
+            </div>
+
+          </div>
+
+        </div>
+      `;
+
+
+    $("#setPlatforms")
+      .value =
+        state.settings
+          .defaultPlatforms;
+
+
+    $("#setResearch")
+      .value =
+        state.settings
+          .researchModel;
+
+
+    $("#setWriter")
+      .value =
+        state.settings
+          .writerModel;
+
+
+    $("#setPlatformModel")
+      .value =
+        state.settings
+          .platformModel;
+
+
+    $("#setQueries")
+      .value =
+        state.settings
+          .queries;
+
+
+    $("#setLimit")
+      .value =
+        state.settings
+          .limit;
+
+
+    $("#setInterval")
+      .value =
+        state.settings
+          .interval;
+  }
+
+
+  function saveSettings() {
+
+    const value =
+      selector =>
+        $(selector)
+          ?.value;
+
+
+    state.settings
+      .defaultPlatforms =
+        value(
+          "#setPlatforms"
+        )
+        ||
+        state.settings
+          .defaultPlatforms;
+
+
+    state.settings
+      .researchModel =
+        value(
+          "#setResearch"
+        )
+        ||
+        state.settings
+          .researchModel;
+
+
+    state.settings
+      .writerModel =
+        value(
+          "#setWriter"
+        )
+        ||
+        state.settings
+          .writerModel;
+
+
+    state.settings
+      .platformModel =
+        value(
+          "#setPlatformModel"
+        )
+        ||
+        state.settings
+          .platformModel;
+
+
+    state.settings
+      .queries =
+        Number(
+          value(
+            "#setQueries"
+          )
+        )
+        ||
+        5;
+
+
+    state.settings
+      .limit =
+        Number(
+          value(
+            "#setLimit"
+          )
+        )
+        ||
+        1000;
+
+
+    state.settings
+      .interval =
+        Number(
+          value(
+            "#setInterval"
+          )
+        )
+        ||
+        1500;
+
+
+    saveState();
+
+    toast(
+      "设置已保存"
+    );
+  }
+
+
+  /* =======================================================
+     确认框
+     ======================================================= */
+
+  function openConfirm(
+    title,
+    text,
+    action
+  ) {
+
+    $("#confirmTitle")
+      .textContent =
+        title;
+
+
+    $("#confirmText")
+      .textContent =
+        text;
+
+
+    confirmAction =
+      action;
+
+
+    $("#confirmModal")
+      .classList.add(
+        "show"
+      );
+  }
+
+
+  /* =======================================================
+     新建 Workflow
+     ======================================================= */
+
+  function newRun(
+    payload
+  ) {
+
+    const run = {
+
+      id:
+        makeId(
+          "run"
+        ),
+
+      topic:
+        payload.topic
+        ||
+        "未命名主题",
+
+      status:
+        "running",
+
+      directionMode:
+        payload.directionMode
+        ||
+        "auto",
+
+      publishMode:
+        payload.publishMode
+        ||
+        "review",
+
+      platforms:
+        payload.platforms
+          ?.length
+
+          ? payload.platforms
+
+          : [
+              "xiaohongshu"
+            ],
+
+      created:
+        Date.now(),
+
+      current:
+        0,
+
+      events: []
+    };
+
+
+    state.runs.unshift(
+      run
+    );
+
+
+    pushRunEvent(
+      run,
+      "任务已创建，开始执行"
+    );
+
+
+    saveState();
+
+    startWorkflow(
+      run
+    );
+
+
+    return run;
+  }
+
+
+  function createFromModal() {
+
+    const topic =
+      $("#topic")
+        .value
+        .trim();
+
+
+    const directionMode =
+      $(
+        "#directionChoices .choice.active"
+      )
+        .dataset
+        .value;
+
+
+    const publishMode =
+      $(
+        "#publishChoices .choice.active"
+      )
+        .dataset
+        .value;
+
+
+    const platforms =
+      $$("#platformChoices input:checked")
+        .map(
+          input =>
+            input.value
+        );
+
+
+    if (!topic) {
+
+      toast(
+        "请输入主题"
+      );
+
+      return;
+    }
+
+
+    if (!platforms.length) {
+
+      toast(
+        "请至少选择一个发布平台"
+      );
+
+      return;
+    }
+
+
+    const run =
+      newRun({
+
+        topic,
+        directionMode,
+        publishMode,
+        platforms
+      });
+
+
+    $("#createModal")
+      .classList.remove(
+        "show"
+      );
+
+
+    currentRunId =
+      run.id;
+
+
+    toast(
+      "任务已创建"
+    );
+
+
+    renderRunDetail();
+
+    navigate(
+      "run-detail"
+    );
+  }
+
+
+  /* =======================================================
+     人工选题
+     ======================================================= */
+
+  function chooseDirection(
+    index
+  ) {
+
+    const run =
+      state.runs.find(
+        item =>
+          item.id ===
+          currentRunId
+      );
+
+
+    if (!run) {
+      return;
+    }
+
+
+    const directions = [
+      "从 RNN 瓶颈理解 Transformer",
+      "一篇搞懂自注意力机制",
+      "Transformer 工程化与扩展"
+    ];
+
+
+    run.direction =
+      directions[
+        index
+      ];
+
+
+    run.status =
+      "running";
+
+
+    run.current =
+      5;
+
+
+    pushRunEvent(
+      run,
+      "已选择内容方向：" +
+      run.direction
+    );
+
+
+    saveState();
+
+    renderRunDetail();
+
+    startWorkflow(
+      run
+    );
+  }
+
+
+  /* =======================================================
+     Retry / Cancel
+     ======================================================= */
+
+  function retryRun(
+    runId
+  ) {
+
+    const run =
+      state.runs.find(
+        item =>
+          item.id ===
+          runId
+      );
+
+
+    if (!run) {
+      return;
+    }
+
+
+    run.status =
+      "running";
+
+
+    if (
+      run.current >=
+      7
+    ) {
+      run.current =
+        6;
+    }
+
+
+    pushRunEvent(
+      run,
+      "任务已手动重试"
+    );
+
+
+    saveState();
+
+    startWorkflow(
+      run
+    );
+
+    renderCurrentPages();
+  }
+
+
+  function cancelRun(
+    runId
+  ) {
+
+    const run =
+      state.runs.find(
+        item =>
+          item.id ===
+          runId
+      );
+
+
+    if (!run) {
+      return;
+    }
+
+
+    run.status =
+      "cancelled";
+
+
+    clearTimeout(
+      timers[
+        run.id
+      ]
+    );
+
+
+    pushRunEvent(
+      run,
+      "任务已取消"
+    );
+
+
+    saveState();
+
+    renderCurrentPages();
+  }
+
+
+  /* =======================================================
+     页面刷新
+     ======================================================= */
+
+  function renderCurrentPages() {
+
+    updateCounts();
+
+
+    if (
+      $("#page-dashboard")
+        .classList
+        .contains(
+          "active"
+        )
+    ) {
+      renderDashboard();
+    }
+
+
+    if (
+      $("#page-runs")
+        .classList
+        .contains(
+          "active"
+        )
+    ) {
+      renderRuns();
+    }
+
+
+    if (
+      $("#page-drafts")
+        .classList
+        .contains(
+          "active"
+        )
+    ) {
+      renderDrafts();
+    }
+
+
+    if (
+      $("#page-publishing")
+        .classList
+        .contains(
+          "active"
+        )
+    ) {
+      renderPublishing();
+    }
+
+
+    if (
+      currentRunId
+      &&
+      $("#page-run-detail")
+        .classList
+        .contains(
+          "active"
+        )
+    ) {
+      renderRunDetail();
+    }
+  }
+
+
+  /* =======================================================
+     Choice
+     ======================================================= */
+
+  function setupChoiceGroup(
+    selector
+  ) {
+
+    $$(
+      selector +
+      " .choice"
+    )
+      .forEach(
+        button => {
+
+          button
+            .addEventListener(
+              "click",
+              () => {
+
+                $$(
+                  selector +
+                  " .choice"
+                )
+                  .forEach(
+                    item => {
+                      item
+                        .classList
+                        .remove(
+                          "active"
+                        );
+                    }
+                  );
+
+
+                button
+                  .classList
+                  .add(
+                    "active"
+                  );
+              }
+            );
+        }
+      );
+  }
+
+
+  /* =======================================================
+     全局事件
+     ======================================================= */
+
+  document
+    .addEventListener(
+      "click",
+      event => {
+
+        const navItem =
+          event.target.closest(
+            "[data-nav]"
+          );
+
+
+        if (navItem) {
+
+          navigate(
+            navItem
+              .dataset
+              .nav
+          );
+
+          return;
+        }
+
+
+        const go =
+          event.target.closest(
+            "[data-go]"
+          );
+
+
+        if (go) {
+
+          navigate(
+            go
+              .dataset
+              .go
+          );
+
+          return;
+        }
+
+
+        if (
+          event.target.closest(
+            "[data-create]"
+          )
+        ) {
+
+          $("#createModal")
+            .classList
+            .add(
+              "show"
+            );
+
+          return;
+        }
+
+
+        const close =
+          event.target.closest(
+            "[data-close]"
+          );
+
+
+        if (close) {
+
+          $(
+            "#" +
+            close.dataset.close
+          )
+            .classList
+            .remove(
+              "show"
+            );
+
+          return;
+        }
+
+
+        const run =
+          event.target.closest(
+            "[data-open-run]"
+          );
+
+
+        if (run) {
+
+          openRun(
+            run
+              .dataset
+              .openRun
+          );
+
+          return;
+        }
+
+
+        const draft =
+          event.target.closest(
+            "[data-open-draft]"
+          );
+
+
+        if (draft) {
+
+          openDraft(
+            draft
+              .dataset
+              .openDraft
+          );
+
+          return;
+        }
+
+
+        const direction =
+          event.target.closest(
+            "[data-direction]"
+          );
+
+
+        if (direction) {
+
+          chooseDirection(
+            Number(
+              direction
+                .dataset
+                .direction
+            )
+          );
+
+          return;
+        }
+
+
+        const retry =
+          event.target.closest(
+            "[data-retry-run]"
+          );
+
+
+        if (retry) {
+
+          retryRun(
+            retry
+              .dataset
+              .retryRun
+          );
+
+          return;
+        }
+
+
+        const cancel =
+          event.target.closest(
+            "[data-cancel-run]"
+          );
+
+
+        if (cancel) {
+
+          openConfirm(
+
+            "取消任务",
+
+            "确认取消当前工作流？",
+
+            () => {
+              cancelRun(
+                cancel
+                  .dataset
+                  .cancelRun
+              );
+            }
+          );
+
+          return;
+        }
+
+
+        const version =
+          event.target.closest(
+            "[data-version]"
+          );
+
+
+        if (version) {
+
+          commitDraft();
+
+
+          const current =
+            state.drafts.find(
+              item =>
+                item.id ===
+                currentDraftId
+            );
+
+
+          if (current) {
+
+            current.selected =
+              version
+                .dataset
+                .version;
+
+
+            saveState();
+
+            renderDraftEditor();
+          }
+
+
+          return;
+        }
+
+
+        const command =
+          event.target.closest(
+            "[data-command]"
+          );
+
+
+        if (command) {
+
+          /*
+           * 这里只作为 prototype 工具栏。
+           * 生产系统建议替换成熟富文本编辑器。
+           */
+
+          document.execCommand(
+            command
+              .dataset
+              .command,
+            false
+          );
+
+
+          $("#editor")
+            ?.focus();
+
+          return;
+        }
+
+
+        const block =
+          event.target.closest(
+            "[data-block]"
+          );
+
+
+        if (block) {
+
+          document.execCommand(
+            "formatBlock",
+            false,
+            block
+              .dataset
+              .block
+          );
+
+
+          $("#editor")
+            ?.focus();
+
+          return;
+        }
+
+
+        const retryPublish =
+          event.target.closest(
+            "[data-retry-publish]"
+          );
+
+
+        if (
+          retryPublish
+        ) {
+
+          const item =
+            state.publishing.find(
+              record =>
+                record.id ===
+                retryPublish
+                  .dataset
+                  .retryPublish
+            );
+
+
+          if (item) {
+
+            item.status =
+              "queued";
+
+
+            saveState();
+
+            renderPublishing();
+
+            toast(
+              "已重新加入发布队列"
+            );
+          }
+
+
+          return;
+        }
+
+
+        if (
+          event.target.closest(
+            "#saveDraft"
+          )
+        ) {
+
+          commitDraft(
+            true
+          );
+
+          return;
+        }
+
+
+        if (
+          event.target.closest(
+            "#approveDraft"
+          )
+        ) {
+
+          approveCurrentDraft();
+
+          return;
+        }
+
+
+        const settingTab =
+          event.target.closest(
+            "[data-settings]"
+          );
+
+
+        if (settingTab) {
+
+          $$(".settings-menu button")
+            .forEach(
+              button => {
+
+                button
+                  .classList
+                  .toggle(
+                    "active",
+                    button ===
+                    settingTab
+                  );
+              }
+            );
+
+
+          $$(".settings-panel")
+            .forEach(
+              panel => {
+
+                panel
+                  .classList
+                  .toggle(
+                    "active",
+
+                    panel
+                      .dataset
+                      .settingsPanel
+
+                    ===
+
+                    settingTab
+                      .dataset
+                      .settings
+                  );
+              }
+            );
+
+
+          return;
+        }
+
+
+        if (
+          event.target.closest(
+            "#mockPost"
+          )
+        ) {
+
+          /*
+           * MOCK:
+           * POST /api/v1/runs
+           *
+           * 生产环境这里应该改为：
+           *
+           * fetch('/api/v1/runs', {
+           *   method: 'POST',
+           *   headers: {
+           *     'Content-Type': 'application/json'
+           *   },
+           *   body: JSON.stringify(payload)
+           * })
+           */
+
+          const run =
+            newRun({
+
+              topic:
+                "Transformer 架构",
+
+              directionMode:
+                "auto",
+
+              publishMode:
+                "review",
+
+              platforms: [
+                "xiaohongshu",
+                "zhihu"
+              ]
+            });
+
+
+          toast(
+            "已模拟 POST /api/v1/runs，返回 202 与 " +
+            run.id
+          );
+
+
+          currentRunId =
+            run.id;
+
+
+          renderRunDetail();
+
+          navigate(
+            "run-detail"
+          );
+
+
+          return;
+        }
+
+
+        if (
+          event.target.closest(
+            "#copyApi"
+          )
+        ) {
+
+          const sample =
+            `POST /api/v1/runs
+
+${JSON.stringify(
+  {
+    topic:
+      "Transformer 架构",
+
+    directionMode:
+      "auto",
+
+    publishMode:
+      "review",
+
+    platforms: [
+      "xiaohongshu",
+      "zhihu"
+    ]
+  },
+  null,
+  2
+)}`;
+
+
+          navigator
+            .clipboard
+            ?.writeText(
+              sample
+            );
+
+
+          toast(
+            "示例已复制"
+          );
+
+          return;
+        }
+      }
+    );
+
+
+  /* =======================================================
+     contenteditable 自动保存
+     ======================================================= */
+
+  document
+    .addEventListener(
+      "input",
+      event => {
+
+        if (
+          event.target.id !==
+          "editor"
+        ) {
+          return;
+        }
+
+
+        clearTimeout(
+          event.target
+            ._autosaveTimer
+        );
+
+
+        const status =
+          $("#autoSaveState");
+
+
+        if (status) {
+
+          status.innerHTML = `
+            <span
+              class="fa i-clock"
+              aria-hidden="true">
+            </span>
+            正在自动保存
+          `;
+        }
+
+
+        event.target
+          ._autosaveTimer =
+            setTimeout(
+              () => {
+
+                commitDraft();
+
+
+                const element =
+                  $("#autoSaveState");
+
+
+                if (element) {
+
+                  element.innerHTML = `
+                    <span
+                      class="fa i-ok"
+                      aria-hidden="true">
+                    </span>
+                    已自动保存
+                  `;
+                }
+
+              },
+              900
+            );
+      }
+    );
+
+
+  /* =======================================================
+     Escape / Cmd K / Ctrl K
+     ======================================================= */
+
+  document
+    .addEventListener(
+      "keydown",
+      event => {
+
+        if (
+          event.key ===
+          "Escape"
+        ) {
+
+          $$(".modal-backdrop")
+            .forEach(
+              modal => {
+
+                modal
+                  .classList
+                  .remove(
+                    "show"
+                  );
+              }
+            );
+        }
+
+
+        if (
+          (
+            event.metaKey ||
+            event.ctrlKey
+          )
+          &&
+          event.key
+            .toLowerCase()
+          === "k"
+        ) {
+
+          event.preventDefault();
+
+
+          $("#globalSearch")
+            .focus();
+        }
+      }
+    );
+
+
+  /* =======================================================
+     主题按钮
+     ======================================================= */
+
+  $$(".theme")
+    .forEach(
+      button => {
+
+        button
+          .addEventListener(
+            "click",
+            () => {
+
+              applyTheme(
+                button
+                  .dataset
+                  .theme
+              );
+            }
+          );
+      }
+    );
+
+
+  /* =======================================================
+     侧栏键盘操作
+     ======================================================= */
+
+  $$(".nav")
+    .forEach(
+      item => {
+
+        item
+          .addEventListener(
+            "keydown",
+            event => {
+
+              if (
+                event.key ===
+                  "Enter"
+                ||
+                event.key ===
+                  " "
+              ) {
+
+                navigate(
+                  item
+                    .dataset
+                    .nav
+                );
+              }
+            }
+          );
+      }
+    );
+
+
+  /* =======================================================
+     新建任务
+     ======================================================= */
+
+  $$("[data-create]")
+    .forEach(
+      button => {
+
+        button
+          .addEventListener(
+            "click",
+            () => {
+
+              $("#createModal")
+                .classList
+                .add(
+                  "show"
+                );
+            }
+          );
+      }
+    );
+
+
+  $$("[data-close]")
+    .forEach(
+      button => {
+
+        button
+          .addEventListener(
+            "click",
+            () => {
+
+              $(
+                "#" +
+                button
+                  .dataset
+                  .close
+              )
+                .classList
+                .remove(
+                  "show"
+                );
+            }
+          );
+      }
+    );
+
+
+  setupChoiceGroup(
+    "#directionChoices"
+  );
+
+
+  setupChoiceGroup(
+    "#publishChoices"
+  );
+
+
+  $("#platformChoices")
+    .addEventListener(
+      "change",
+      event => {
+
+        const choice =
+          event.target.closest(
+            ".choice"
+          );
+
+
+        if (choice) {
+
+          choice
+            .classList
+            .toggle(
+              "active",
+              event.target.checked
+            );
+        }
+      }
+    );
+
+
+  $("#createRun")
+    .addEventListener(
+      "click",
+      createFromModal
+    );
+
+
+  /* =======================================================
+     搜索筛选
+     ======================================================= */
+
+  $("#runSearch")
+    .addEventListener(
+      "input",
+      renderRuns
+    );
+
+
+  $("#runFilter")
+    .addEventListener(
+      "change",
+      renderRuns
+    );
+
+
+  $("#draftSearch")
+    .addEventListener(
+      "input",
+      renderDrafts
+    );
+
+
+  $("#draftPlatform")
+    .addEventListener(
+      "change",
+      renderDrafts
+    );
+
+
+  $("#globalSearch")
+    .addEventListener(
+      "keydown",
+      event => {
+
+        if (
+          event.key ===
+          "Enter"
+        ) {
+
+          $("#runSearch")
+            .value =
+              event.target
+                .value;
+
+
+          navigate(
+            "runs"
+          );
+
+
+          renderRuns();
+        }
+      }
+    );
+
+
+  /* =======================================================
+     发布
+     ======================================================= */
+
+  $("#processQueue")
+    .addEventListener(
+      "click",
+      processPublishQueue
+    );
+
+
+  /* =======================================================
+     设置
+     ======================================================= */
+
+  $("#saveSettings")
+    .addEventListener(
+      "click",
+      saveSettings
+    );
+
+
+  /* =======================================================
+     Confirm
+     ======================================================= */
+
+  $("#confirmNo")
+    .addEventListener(
+      "click",
+      () => {
+
+        $("#confirmModal")
+          .classList
+          .remove(
+            "show"
+          );
+
+
+        confirmAction =
+          null;
+      }
+    );
+
+
+  $("#confirmYes")
+    .addEventListener(
+      "click",
+      () => {
+
+        $("#confirmModal")
+          .classList
+          .remove(
+            "show"
+          );
+
+
+        const action =
+          confirmAction;
+
+
+        confirmAction =
+          null;
+
+
+        if (action) {
+          action();
+        }
+      }
+    );
+
+
+  /* =======================================================
+     离开页面前保存草稿
+     ======================================================= */
+
+  window
+    .addEventListener(
+      "beforeunload",
+      () => {
+
+        if (
+          currentDraftId
+        ) {
+          commitDraft();
+        }
+      }
+    );
+
+
+  /* =======================================================
+     初始化
+     ======================================================= */
+
+  applyTheme(
+    state.theme ||
+    "auto"
+  );
+
+
+  renderSources();
+  renderSettings();
+  renderCurrentPages();
+
+
+  /*
+   * 恢复未完成任务。
+   * 生产环境应该从 SQLite workflow_steps / jobs
+   * 状态恢复，而不是浏览器内存。
+   */
+
+  state.runs
+    .filter(
+      run =>
+        run.status ===
+        "running"
+    )
+    .forEach(
+      run =>
+        startWorkflow(
+          run
+        )
+    );
+
+})();
+</script>
+
+</body>
+</html>

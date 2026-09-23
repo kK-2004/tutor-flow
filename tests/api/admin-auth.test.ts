@@ -75,6 +75,24 @@ describe('管理后台认证与权限', () => {
     });
   });
 
+  it('支持两位用户名登录', async () => {
+    await createAdminUser(db.db, {
+      username: 'kk',
+      passwordHash: await hashAdminPassword('kk-password-123'),
+      role: 'SUPER_ADMIN',
+    });
+    const cookie = await login('kk', 'kk-password-123');
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      user: { username: 'kk', role: 'SUPER_ADMIN' },
+    });
+  });
+
   it('SUPER_ADMIN 可以创建 ADMIN 并随机重置密码', async () => {
     const cookie = await login('root', 'root-password-123');
     const tooShort = await app.inject({

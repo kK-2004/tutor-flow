@@ -18,6 +18,8 @@ services:
       BOOTSTRAP_SUPER_ADMIN_PASSWORD: ${BOOTSTRAP_SUPER_ADMIN_PASSWORD:-change-me-now-123}
     volumes:
       - tutor-flow-data:/data
+    networks:
+      - common-net
     restart: 'no'
 
   api:
@@ -38,7 +40,7 @@ services:
       XHS_MCP_URL: http://xiaohongshu-mcp:18060/mcp
       XHS_MCP_ACCOUNT_ID: ${XHS_MCP_ACCOUNT_ID:-00000000-0000-4000-8000-000000000001}
     ports:
-      - '${TUTOR_FLOW_BIND_ADDRESS:-127.0.0.1}:${API_PUBLISHED_PORT:-4000}:4000'
+      - '127.0.0.1:${API_PUBLISHED_PORT:-4000}:4000'
     volumes:
       - tutor-flow-data:/data
     depends_on:
@@ -48,6 +50,8 @@ services:
         condition: service_started
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+    networks:
+      - common-net
     healthcheck:
       test:
         - CMD
@@ -80,6 +84,8 @@ services:
         condition: service_started
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+    networks:
+      - common-net
     healthcheck:
       test:
         - CMD
@@ -102,10 +108,12 @@ services:
       NODE_ENV: production
       CONSOLE_API_BASE_URL: http://api:4000
     ports:
-      - '${TUTOR_FLOW_BIND_ADDRESS:-127.0.0.1}:${CONSOLE_PORT:-3000}:3000'
+      - '${TUTOR_FLOW_BIND_ADDRESS:-127.0.0.1}:${CONSOLE_PORT:-8003}:3000'
     depends_on:
       api:
         condition: service_healthy
+    networks:
+      - common-net
     healthcheck:
       test:
         - CMD
@@ -120,6 +128,8 @@ services:
 
   xiaohongshu-mcp:
     image: ${XHS_MCP_IMAGE_REPOSITORY:-xpzouying/xiaohongshu-mcp}
+    networks:
+      - common-net
     restart: unless-stopped
     tty: true
     volumes:
@@ -135,3 +145,7 @@ services:
 
 volumes:
   tutor-flow-data:
+
+networks:
+  common-net:
+    external: true

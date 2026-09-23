@@ -28,6 +28,9 @@ packages/
 # 准备环境变量并配置外部 Redis 地址
 cp .env.example .env
 
+# 根 Compose 会连接已有的 common-net；本机没有该网络时创建一个
+docker network inspect common-net >/dev/null 2>&1 || docker network create common-net
+
 # 构建并启动整个项目
 docker compose up --build -d
 
@@ -36,7 +39,9 @@ docker compose ps
 docker compose logs -f api worker console
 ```
 
-管理台默认访问 `http://localhost:3000`，API 默认端口为 `4000`。SQLite 数据持久化在 Compose 命名卷 `tutor-flow-data`；小红书扫码登录态保存在 `mcp/xhs/data`。`docker compose down` 不会删除这些数据。不要同时启动 `mcp/xhs/docker-compose.yml` 中的 MCP 服务。
+管理台默认访问 `http://localhost:8003`（宿主机端口 `8003` 映射到容器端口 `3000`），API 默认端口为 `4000` 且只绑定宿主机回环地址。生产部署的管理台也默认绑定 `127.0.0.1:8003`，由 Nginx 通过 HTTPS 域名反向代理访问。SQLite 数据持久化在 Compose 命名卷 `tutor-flow-data`；小红书扫码登录态保存在 `mcp/xhs/data`。`docker compose down` 不会删除这些数据。不要同时启动 `mcp/xhs/docker-compose.yml` 中的 MCP 服务。
+
+API、Worker、管理台和小红书 MCP 都加入外部 `common-net`，以便互相访问并连接同网络中的 Redis。线上 `REDIS_URL` 默认使用 `redis://redis:6379`；若 Redis 的网络别名不同，在 GitHub Actions Secret `REDIS_URL` 中填写对应地址。
 
 首次启动可使用 `.env` 中的 `BOOTSTRAP_SUPER_ADMIN_USERNAME` 与
 `BOOTSTRAP_SUPER_ADMIN_PASSWORD` 登录管理台。默认值为 `admin` / `change-me-now-123`，

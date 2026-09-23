@@ -32,7 +32,7 @@ const SESSION_TTL_SECONDS = 90 * 24 * 60 * 60;
 const usernameSchema = z
   .string()
   .trim()
-  .min(3)
+  .min(2)
   .max(32)
   .regex(/^[A-Za-z0-9._-]+$/, '用户名只能包含字母、数字、点、下划线和连字符');
 const passwordSchema = z.string().min(5).max(128);

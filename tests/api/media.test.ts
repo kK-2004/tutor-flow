@@ -127,7 +127,7 @@ describe('内容中心媒体路由', () => {
     });
   });
 
-  it('链接有效期从设置表热读取', async () => {
+  it('临时预览链接的有效期从下载设置热读取', async () => {
     await upsertSetting(db.db, {
       key: 'content_center',
       updatedBy: 'test',
@@ -154,7 +154,7 @@ describe('内容中心媒体路由', () => {
     );
     const response = await app.inject({
       method: 'GET',
-      url: '/api/v1/media/42/cdn-link',
+      url: '/api/v1/media/42/preview-link',
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.statusCode).toBe(200);

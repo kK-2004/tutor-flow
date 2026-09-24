@@ -11,6 +11,6 @@
 
 ## 上传链路
 
-管理台调用 `POST /api/v1/media/uploads/init`，API 使用应用令牌向 k-File 申请预签名地址。浏览器使用与初始化请求完全一致的 `Content-Type` 直接 PUT 图片字节，成功后调用 `POST /api/v1/media/uploads/complete`；API 让 k-File 读取对象的权威元数据并返回媒体引用。草稿自动保存该引用，删除草稿中的引用只解除关联，不删除 k-File 中的文件。预览通过 `GET /api/v1/media/:fileId/cdn-link` 获取链接；另可通过 `GET /api/v1/media/:fileId/download-link` 获取限时下载地址。这些接口均要求运营人员身份。
+管理台调用 `POST /api/v1/media/uploads/init`，API 使用应用令牌向 k-File 申请预签名地址。浏览器使用与初始化请求完全一致的 `Content-Type` 直接 PUT 图片字节，成功后调用 `POST /api/v1/media/uploads/complete`；API 让 k-File 读取对象的权威元数据并返回媒体引用。草稿自动保存该引用，删除草稿中的引用只解除关联，不删除 k-File 中的文件。预览通过 `GET /api/v1/media/:fileId/preview-link` 获取使用 `downloadExpiresIn` 的临时下载签名；另可通过 `GET /api/v1/media/:fileId/download-link` 获取未经重定向解析的限时下载地址。这些接口均要求运营人员身份。
 
 预签名地址会短时返回浏览器，应用令牌不会返回浏览器。请勿在日志、分析事件或错误上报中记录完整预签名 URL。图片用于资料编辑、模型识别和资料引用。

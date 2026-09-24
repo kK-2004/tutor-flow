@@ -154,11 +154,11 @@ export function registerMediaRoutes(
   );
 
   app.get(
-    '/api/v1/media/:fileId/cdn-link',
+    '/api/v1/media/:fileId/preview-link',
     { preHandler: authenticate },
     async (request, reply) => {
       if (!isOperator(request.actor)) {
-        return reply.code(403).send({ error: '仅运营人员可查看媒体链接' });
+        return reply.code(403).send({ error: '仅运营人员可获取预览链接' });
       }
       const parsed = z.coerce
         .number()

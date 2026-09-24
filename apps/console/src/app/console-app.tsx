@@ -260,7 +260,7 @@ function ResearchImagePreview({ fileId, alt }: { fileId: number; alt: string }) 
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let active = true;
-    void api<{ url: string }>(`/api/v1/media/${fileId}/cdn-link`)
+    void api<{ url: string }>(`/api/v1/media/${fileId}/preview-link`)
       .then((result) => {
         if (active) setUrl(result.url);
       })
@@ -2902,7 +2902,7 @@ function SettingsView({ user }: { user: AdminUser }) {
                     </div>
                     <div className="setting-editor">
                       <label htmlFor="content-download-expiry">
-                        下载链接有效期（秒）
+                        临时下载/预览链接有效期（秒）
                       </label>
                       <input
                         id="content-download-expiry"
@@ -2920,7 +2920,7 @@ function SettingsView({ user }: { user: AdminUser }) {
                     </div>
                     <div className="setting-editor">
                       <label htmlFor="content-cdn-expiry">
-                        预览链接有效期（秒，0 为永久）
+                        CDN 链接有效期（秒，0 为永久）
                       </label>
                       <input
                         id="content-cdn-expiry"

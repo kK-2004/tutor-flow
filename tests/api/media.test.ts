@@ -161,30 +161,4 @@ describe('内容中心媒体路由', () => {
       expiresIn: 120,
     });
   });
-
-  it('后台更新大小限制后立即拒绝超限图片', async () => {
-    const saved = await app.inject({
-      method: 'PATCH',
-      url: '/api/v1/settings/content_center',
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        value: {
-          source: 'minio',
-          path: 'team/images',
-          maxUploadBytes: 100,
-          downloadExpiresIn: 600,
-          cdnExpiresIn: 120,
-        },
-      },
-    });
-    expect(saved.statusCode).toBe(200);
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/media/uploads/init',
-      headers: { authorization: `Bearer ${token}` },
-      payload: { filename: 'cover.png', size: 101, contentType: 'image/png' },
-    });
-    expect(response.statusCode).toBe(413);
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
-  });
 });

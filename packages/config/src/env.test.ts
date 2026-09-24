@@ -45,14 +45,13 @@ describe('环境 schema 校验', () => {
     ).toThrow();
   });
 
-  it('生产 Worker 使用 MCP 镜像引用即可启动', () => {
+  it('生产 Worker 无需小红书发布服务配置即可启动', () => {
     const workerEnv = {
       NODE_ENV: 'production',
       SQLITE_PATH: './data/tutor-flow.db',
       REDIS_URL: 'redis://localhost:6379',
-      XHS_MCP_URL: 'http://xiaohongshu-mcp:18060/mcp',
     };
-    expect(workerEnvSchema.parse(workerEnv).XHS_MCP_URL).toBe(workerEnv.XHS_MCP_URL);
+    expect(workerEnvSchema.parse(workerEnv).NODE_ENV).toBe('production');
   });
 });
 
@@ -62,7 +61,6 @@ describe('服务端环境加载器', () => {
     'DATABASE_URL',
     'SQLITE_PATH',
     'REDIS_URL',
-    'XHS_MCP_URL',
     'INTERNAL_API_TOKEN',
     'API_HOST',
     'API_PORT',
@@ -94,15 +92,11 @@ describe('服务端环境加载器', () => {
     expect(second).toBe(first);
   });
 
-  it('Worker 环境接受可选的 MCP 地址', () => {
+  it('Worker 不读取旧小红书 MCP 配置', () => {
     process.env['SQLITE_PATH'] = './data/tutor-flow.db';
     process.env['REDIS_URL'] = 'redis://localhost:6379';
-    const env = loadWorkerEnv();
-    expect(env.XHS_MCP_URL).toBeUndefined();
-    // 清缓存后重新加载，验证非法值会被拒绝
     process.env['XHS_MCP_URL'] = 'not-a-url';
-    resetEnvCacheForTests();
-    expect(() => loadWorkerEnv()).toThrow();
+    expect(loadWorkerEnv()).not.toHaveProperty('XHS_MCP_URL');
   });
 
   it('管理台服务端环境不含任何密钥字段', () => {

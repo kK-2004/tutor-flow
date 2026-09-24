@@ -81,6 +81,7 @@ export const draftRevisions = sqliteTable(
     createdBy: text().notNull(),
     createdAt: now(),
     updatedAt: now(),
+    deletedAt: timestampMs(),
   },
   (t) => [
     uniqueIndex('draft_revision_run_revision_unique').on(t.runId, t.revision),

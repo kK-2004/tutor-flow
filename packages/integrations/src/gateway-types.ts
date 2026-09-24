@@ -81,6 +81,9 @@ export interface LlmRequest {
   systemPrompt: string;
   userPrompt: string;
   maxTokens: number;
+  /** 结构化输出的本地校验及供应商约束 */
+  outputSchema?: import('zod').ZodType;
+  outputName?: string;
 }
 
 /** LLM 调用响应 */

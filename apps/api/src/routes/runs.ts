@@ -8,7 +8,9 @@ import {
   appendAuditEvent,
   contentArtifacts,
   createRun,
-  listEventsAfter,
+  draftRevisions,
+  getRunWithJob,
+  listRunSources,
   listRuns,
   listStepAttempts,
   listDirectionOptions,
@@ -16,11 +18,13 @@ import {
   platformAccounts,
   queryPlans,
   requireRun,
+  softDeleteWorkflowRun,
+  workflowEvents,
 } from '@tutor-flow/db';
 import type { DbClient } from '@tutor-flow/db';
 import { isPlatform, PLATFORMS, RUN_STATUSES, XIAOHONGSHU } from '@tutor-flow/domain';
 import type { ApiEnv } from '@tutor-flow/config/server';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -39,6 +43,8 @@ const createRunBodySchema = z
     publishMode: z.enum(['review', 'auto']),
     platform: z.enum(PLATFORMS),
     accountId: z.string().regex(UUID_PATTERN, 'accountId 必须是 UUID'),
+    researchMode: z.enum(['search', 'library', 'hybrid']).default('search'),
+    researchDocumentIds: z.array(z.string()).max(500).default([]),
   })
   .strict();
 
@@ -101,7 +107,25 @@ export function registerRunRoutes(app: FastifyInstance, options: RunRoutesOption
       return reply.code(401).send({ error: '未认证' });
     }
     const body = parseBody(createRunBodySchema, request.body);
+    if (body.publishMode !== 'review')
+      return reply.code(400).send({ error: '仅支持生成并审核内容' });
     await requireXiaohongshuAccount(db, body.accountId);
+    if (body.researchMode !== 'search' && body.researchDocumentIds.length === 0) {
+      return reply
+        .code(400)
+        .send({ error: '请选择至少一篇研究资料，或切换为仅联网检索' });
+    }
+    if (body.researchMode !== 'search' && body.researchDocumentIds.length > 0) {
+      const { researchDocuments } = await import('@tutor-flow/db');
+      const selected = await db.db
+        .select({ id: researchDocuments.id })
+        .from(researchDocuments)
+        .where(inArray(researchDocuments.id, body.researchDocumentIds));
+      if (selected.length !== body.researchDocumentIds.length)
+        return reply.code(400).send({ error: '部分研究资料不存在' });
+    } else if (body.researchMode === 'search' && body.researchDocumentIds.length > 0) {
+      return reply.code(400).send({ error: '自动检索模式不能附带研究资料' });
+    }
 
     const idempotencyHeader = request.headers['idempotency-key'];
     const idempotencyKey =
@@ -118,6 +142,8 @@ export function registerRunRoutes(app: FastifyInstance, options: RunRoutesOption
       idempotencyKey,
       requestHash: requestHashOf(body),
       topic: body.topic,
+      researchMode: body.researchMode,
+      researchDocumentIds: body.researchDocumentIds,
       directionMode: body.directionMode,
       publishMode: body.publishMode,
       platform: XIAOHONGSHU,
@@ -199,27 +225,31 @@ export function registerRunRoutes(app: FastifyInstance, options: RunRoutesOption
       return reply.code(403).send({ error: '仅运营人员可查看运行详情' });
     }
     const { id } = request.params as { id: string };
-    const run = await requireRun(db.db, id).catch((error: unknown) => {
-      if (error instanceof NotFoundError) {
-        return null;
-      }
-      throw error;
-    });
-    if (run === null) {
+    const loaded = await getRunWithJob(db.db, id);
+    if (loaded === null) {
       return reply.code(404).send({ error: `运行任务不存在：${id}` });
     }
+    const { run, job } = loaded;
     const steps = await listStepAttempts(db.db, id);
     const directions = await listDirectionOptions(db.db, id);
-    const events = await listEventsAfter(db.db, id, undefined, 200);
-    const [queryUsageRows, artifactRows] = await Promise.all([
+    const events = (
+      await db.db
+        .select()
+        .from(workflowEvents)
+        .where(eq(workflowEvents.runId, id))
+        .orderBy(desc(workflowEvents.seq))
+        .limit(200)
+    ).reverse();
+    const [queryUsageRows, artifactRows, research, draftRows] = await Promise.all([
+      db.db.select().from(queryPlans).where(eq(queryPlans.runId, id)),
+      db.db.select().from(contentArtifacts).where(eq(contentArtifacts.runId, id)),
+      listRunSources(db.db, id),
       db.db
-        .select({ queries: queryPlans.queries, usage: queryPlans.usage })
-        .from(queryPlans)
-        .where(eq(queryPlans.runId, id)),
-      db.db
-        .select({ generation: contentArtifacts.generation })
-        .from(contentArtifacts)
-        .where(eq(contentArtifacts.runId, id)),
+        .select()
+        .from(draftRevisions)
+        .where(and(eq(draftRevisions.runId, id), isNull(draftRevisions.deletedAt)))
+        .orderBy(desc(draftRevisions.revision))
+        .limit(1),
     ]);
     const usage = queryUsageRows.reduce(
       (total, row) => {
@@ -256,8 +286,13 @@ export function registerRunRoutes(app: FastifyInstance, options: RunRoutesOption
               : undefined;
     return reply.send({
       runId: run.id,
+      topic: job.topic,
+      platform: job.platform,
+      directionMode: job.directionMode,
+      publishMode: job.publishMode,
       status: run.status,
       currentStepType: run.currentStepType,
+      selectedDirectionId: run.selectedDirectionId,
       cancelRequested: run.cancelRequested,
       version: run.version,
       humanWaitSince: run.humanWaitSince,
@@ -284,6 +319,44 @@ export function registerRunRoutes(app: FastifyInstance, options: RunRoutesOption
         totalScore: direction.totalScore,
         rank: direction.rank,
       })),
+      outputs: {
+        queryPlans: queryUsageRows.map((plan) => ({
+          id: plan.id,
+          queries: plan.queries,
+          model: plan.model,
+          promptVersion: plan.promptVersion,
+          usage: plan.usage,
+          partialFailures: plan.partialFailures,
+          createdAt: plan.createdAt,
+        })),
+        sources: research.sources.map(({ cluster, ...source }) => ({
+          ...source,
+          cluster: cluster
+            ? { method: cluster.method, similarity: cluster.similarity }
+            : null,
+        })),
+        claims: research.claims,
+        artifacts: artifactRows.map((artifact) => ({
+          id: artifact.id,
+          kind: artifact.kind,
+          version: artifact.version,
+          title: artifact.title,
+          body: artifact.body,
+          tags: artifact.tags,
+          generation: artifact.generation,
+          createdAt: artifact.createdAt,
+        })),
+        draft: draftRows[0]
+          ? {
+              revision: draftRows[0].revision,
+              status: draftRows[0].status,
+              title: draftRows[0].title,
+              body: draftRows[0].body,
+              tags: draftRows[0].tags,
+              updatedAt: draftRows[0].updatedAt,
+            }
+          : null,
+      },
       events: events.map((event) => ({
         id: event.id,
         seq: event.seq,
@@ -292,6 +365,25 @@ export function registerRunRoutes(app: FastifyInstance, options: RunRoutesOption
         payload: event.payload,
       })),
     });
+  });
+
+  app.delete('/api/v1/runs/:id', { preHandler: authenticate }, async (request, reply) => {
+    const actor = request.actor;
+    if (actor === undefined || actor.kind !== 'operator') {
+      return reply.code(403).send({ error: '仅运营人员可删除工作流' });
+    }
+    const { id } = request.params as { id: string };
+    const deleted = await softDeleteWorkflowRun(db.db, id);
+    await appendAuditEvent(db.db, {
+      actorType: 'operator',
+      actorId: actor.id,
+      action: 'workflow.deleted',
+      resourceType: 'workflow_run',
+      resourceId: id,
+      runId: id,
+      payload: { previousStatus: deleted.status },
+    });
+    return reply.send({ runId: id, deleted: true });
   });
 
   // 人工选择方向

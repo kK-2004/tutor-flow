@@ -8,32 +8,41 @@
  * - 重启恢复扫描
  */
 import { createDb, getSetting } from '@tutor-flow/db';
-import { loadWorkerEnv, resolveDatabasePath } from '@tutor-flow/config/server';
-import { EnvSecretProvider } from '@tutor-flow/config/server';
 import {
-  DEFAULT_CONTENT_CENTER_SETTINGS,
-  parseContentCenterSettings,
-  type StepType,
-} from '@tutor-flow/domain';
+  EnvSecretProvider,
+  loadDotenvIfPresent,
+  loadWorkerEnv,
+  resolveDatabasePath,
+} from '@tutor-flow/config/server';
 import {
-  createContentCenterClient,
-  createHttpMcpToolCaller,
-  createMcpPublisherAdapter,
+  createAiSdkLlmGateway,
+  createBraveSearchGateway,
+  GatewayError,
+  type LlmGateway,
+  type SearchGateway,
 } from '@tutor-flow/integrations';
 import {
   createStepProcessor,
   createWorkflowEngine,
-  type StepHandler,
+  StepFailure,
 } from '@tutor-flow/workflow';
+import {
+  LLM_MODELS_UPDATED_CHANNEL,
+  type LlmModelsConfig,
+  type ModelSelection,
+} from '@tutor-flow/domain';
+import { decryptLocalSecret } from '@tutor-flow/config/server';
 import { Worker } from 'bullmq';
+import type { Redis } from 'ioredis';
 
 import { HealthServer } from './health.js';
 import { OutboxDispatcher } from './dispatcher.js';
 import { WORKFLOW_QUEUE, createConnection, createQueues } from './queues.js';
 import type { StepJobData } from './queues.js';
-import { createPublishJobProcessor } from './publisher/processor.js';
 import { createMetrics } from '@tutor-flow/observability';
+import { createBusinessHandlers } from './business-handlers.js';
 
+loadDotenvIfPresent();
 const env = loadWorkerEnv();
 const workerMetrics = createMetrics();
 
@@ -48,61 +57,187 @@ await db.ready;
 // 工作流引擎：检查点推进、失败处置、恢复扫描
 const engine = createWorkflowEngine(db);
 
-// 业务步骤处理器注册表：随研究（4.x）、生成（5.x）任务逐步注册
-const businessHandlers: Partial<Record<StepType, StepHandler>> = {};
+const secrets = new EnvSecretProvider();
+let configuredSearch: SearchGateway | null = null;
+
+interface LlmRuntimeCache {
+  config: LlmModelsConfig | null;
+  gateways: Map<string, LlmGateway>;
+  providersWithoutKey: Set<string>;
+  providersWithInvalidKey: Set<string>;
+}
+
+const llmConfigKey = (selection: ModelSelection): string =>
+  `${selection.providerId}:${selection.modelId}`;
+
+async function loadLlmRuntimeCache(): Promise<LlmRuntimeCache> {
+  const setting = await getSetting(db.db, 'llm_models');
+  const config = (setting?.value as LlmModelsConfig | undefined) ?? null;
+  const gateways = new Map<string, LlmGateway>();
+  const providersWithoutKey = new Set<string>();
+  const providersWithInvalidKey = new Set<string>();
+  if (!config) {
+    return { config, gateways, providersWithoutKey, providersWithInvalidKey };
+  }
+
+  for (const provider of config.providers) {
+    if (!provider.apiKeyEncrypted) {
+      providersWithoutKey.add(provider.id);
+      continue;
+    }
+    let apiKey: string;
+    try {
+      apiKey = await decryptLocalSecret(
+        provider.apiKeyEncrypted,
+        resolveDatabasePath(env.SQLITE_PATH),
+      );
+    } catch {
+      providersWithInvalidKey.add(provider.id);
+      continue;
+    }
+    for (const modelId of provider.models) {
+      const selection = { providerId: provider.id, modelId };
+      gateways.set(
+        llmConfigKey(selection),
+        createAiSdkLlmGateway({
+          providerId: provider.id,
+          baseURL: provider.baseUrl,
+          model: modelId,
+          apiKey,
+          apiMode: provider.apiMode,
+        }),
+      );
+    }
+  }
+  return { config, gateways, providersWithoutKey, providersWithInvalidKey };
+}
+
+let llmRuntimeCache: LlmRuntimeCache = {
+  config: null,
+  gateways: new Map(),
+  providersWithoutKey: new Set(),
+  providersWithInvalidKey: new Set(),
+};
+let llmRefreshInProgress: Promise<void> | null = null;
+let llmRefreshRequestedAgain = false;
+
+function refreshLlmRuntimeCache(): Promise<void> {
+  if (llmRefreshInProgress) {
+    llmRefreshRequestedAgain = true;
+    return llmRefreshInProgress;
+  }
+  llmRefreshInProgress = (async () => {
+    do {
+      llmRefreshRequestedAgain = false;
+      try {
+        llmRuntimeCache = await loadLlmRuntimeCache();
+        console.log('模型配置缓存已刷新');
+      } catch (error) {
+        console.error(
+          '模型配置缓存刷新失败，继续使用现有缓存：',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    } while (llmRefreshRequestedAgain);
+  })().finally(() => {
+    llmRefreshInProgress = null;
+  });
+  return llmRefreshInProgress;
+}
+
+const llm: LlmGateway = {
+  async complete(request) {
+    try {
+      const { config } = llmRuntimeCache;
+      const taskSelection =
+        config?.taskModels[request.task as keyof LlmModelsConfig['taskModels']];
+      const selection = taskSelection ?? config?.defaultModel ?? null;
+
+      if (selection !== null) {
+        const provider = config?.providers.find(
+          (item) => item.id === selection.providerId,
+        );
+        if (
+          !provider ||
+          !provider.models.includes(selection.modelId) ||
+          !llmRuntimeCache.gateways.has(llmConfigKey(selection))
+        ) {
+          if (provider && llmRuntimeCache.providersWithoutKey.has(provider.id)) {
+            throw new StepFailure(
+              'VALIDATION',
+              `模型 Provider「${provider.name}」尚未配置 API Key`,
+            );
+          }
+          if (provider && llmRuntimeCache.providersWithInvalidKey.has(provider.id)) {
+            throw new StepFailure(
+              'VALIDATION',
+              '模型 API Key 无法解密，请检查加密密钥文件',
+            );
+          }
+          throw new StepFailure(
+            'VALIDATION',
+            '所选模型 Provider 配置无效，请检查系统设置',
+          );
+        }
+        return await llmRuntimeCache.gateways
+          .get(llmConfigKey(selection))!
+          .complete(request);
+      }
+      throw new StepFailure('VALIDATION', '请先在系统设置中配置模型 Provider 和默认模型');
+    } catch (error) {
+      if (error instanceof GatewayError) {
+        throw new StepFailure(
+          error.retryable ? 'TRANSIENT' : 'VALIDATION',
+          error.message,
+        );
+      }
+      throw error;
+    }
+  },
+};
+
+const search: SearchGateway = {
+  async search(query) {
+    if (configuredSearch === null) {
+      const apiKey = await secrets
+        .resolveSecret(env.SEARCH_BRAVE_SECRET_REF)
+        .catch(() => {
+          throw new StepFailure('VALIDATION', '请在 .env 中配置 BRAVE_API_KEY');
+        });
+      configuredSearch = createBraveSearchGateway({
+        apiKey,
+        endpoint: env.SEARCH_BRAVE_ENDPOINT,
+      });
+    }
+    return configuredSearch.search(query);
+  },
+};
+
+const businessHandlers = createBusinessHandlers({ db, llm, search });
 
 const connection = createConnection(env.REDIS_URL);
 const queues = createQueues(connection);
-const contentCenterUrl = env.CONTENT_CENTER_URL;
-const contentCenterSecrets = new EnvSecretProvider();
-const mcpAuthTokenRef = env.XHS_MCP_AUTH_TOKEN_REF;
-
-// 发布器单独绑定 publishing 队列；未明确绑定唯一账号时不消费排队任务。
-const publisherAdapter =
-  env.XHS_MCP_URL && env.XHS_MCP_ACCOUNT_ID
-    ? createMcpPublisherAdapter({
-        boundAccountId: env.XHS_MCP_ACCOUNT_ID,
-        callTool: createHttpMcpToolCaller(
-          env.XHS_MCP_URL,
-          60_000,
-          mcpAuthTokenRef
-            ? () => contentCenterSecrets.resolveSecret(mcpAuthTokenRef)
-            : undefined,
-        ),
-        resolveMediaUrl: contentCenterUrl
-          ? async (fileId) => {
-              const item = await getSetting(db.db, 'content_center');
-              const settings =
-                item === null
-                  ? DEFAULT_CONTENT_CENTER_SETTINGS
-                  : parseContentCenterSettings(item.value);
-              const token = await contentCenterSecrets.resolveSecret(
-                env.CONTENT_CENTER_TOKEN_REF,
-              );
-              const client = createContentCenterClient({
-                baseUrl: contentCenterUrl,
-                appToken: token,
-              });
-              const link = await client.getCdnLink(fileId, settings.cdnExpiresIn);
-              return link.url;
-            }
-          : undefined,
-      })
-    : null;
-const publisherWorker = publisherAdapter
-  ? new Worker(
-      'publishing',
-      createPublishJobProcessor({
-        db,
-        adapter: publisherAdapter,
-        secrets: new EnvSecretProvider(),
-        queue: queues.publishing,
-        metrics: workerMetrics,
-      }),
-      { connection },
-    )
-  : null;
-
+const llmConfigSubscriber: Redis = connection.duplicate();
+let llmConfigInitialized = false;
+let llmRefreshPending = false;
+llmConfigSubscriber.on('error', (error) => {
+  console.error('模型配置刷新订阅连接异常：', error.message);
+});
+llmConfigSubscriber.on('message', (channel) => {
+  if (channel === LLM_MODELS_UPDATED_CHANNEL) {
+    if (llmConfigInitialized) {
+      void refreshLlmRuntimeCache();
+    } else {
+      llmRefreshPending = true;
+    }
+  }
+});
+await llmConfigSubscriber.subscribe(LLM_MODELS_UPDATED_CHANNEL);
+llmRuntimeCache = await loadLlmRuntimeCache();
+llmConfigInitialized = true;
+if (llmRefreshPending) {
+  await refreshLlmRuntimeCache();
+}
 // 步骤消费者：幂等中间件 + 引擎钩子
 const processStepJob = createStepProcessor({
   db,
@@ -132,10 +267,6 @@ const stepWorker = new Worker<StepJobData>(
 
 stepWorker.on('failed', (job, error) => {
   console.error(`步骤任务失败：${job?.id ?? '未知'}`, error);
-});
-
-publisherWorker?.on('failed', (job, error) => {
-  console.error(`发布任务失败：${job?.id ?? '未知'}`, error);
 });
 
 // 发件箱分发器：数据库 → BullMQ
@@ -179,8 +310,8 @@ async function shutdown(): Promise<void> {
   clearTimeout(recoveryTimer);
   await dispatcher.stop();
   await stepWorker.close();
-  await publisherWorker?.close();
   await queues.close();
+  await llmConfigSubscriber.quit();
   await healthServer.close();
   await db.close();
   connection.disconnect();

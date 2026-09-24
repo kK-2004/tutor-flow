@@ -24,8 +24,6 @@ services:
       CONSOLE_API_BASE_URL: http://127.0.0.1:4000
       SQLITE_PATH: /data/tutor-flow.db
       REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379}
-      XHS_MCP_URL: http://xiaohongshu-mcp:18060/mcp
-      XHS_MCP_ACCOUNT_ID: ${XHS_MCP_ACCOUNT_ID:-00000000-0000-4000-8000-000000000001}
       BOOTSTRAP_SUPER_ADMIN_USERNAME: ${BOOTSTRAP_SUPER_ADMIN_USERNAME:-admin}
       BOOTSTRAP_SUPER_ADMIN_PASSWORD: ${BOOTSTRAP_SUPER_ADMIN_PASSWORD:-change-me-now-123}
     ports:
@@ -33,9 +31,6 @@ services:
       - '127.0.0.1:${API_PUBLISHED_PORT:-4000}:4000'
     volumes:
       - tutor-flow-data:/data
-    depends_on:
-      xiaohongshu-mcp:
-        condition: service_started
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     networks:
@@ -47,26 +42,6 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
-
-  xiaohongshu-mcp:
-    # 浏览器与 MCP 服务共用 512 MB 硬上限，禁止额外使用交换空间。
-    mem_limit: 512m
-    memswap_limit: 512m
-    image: ${XHS_MCP_IMAGE_REPOSITORY:-xpzouying/xiaohongshu-mcp}
-    networks:
-      - common-net
-    restart: unless-stopped
-    tty: true
-    volumes:
-      - ./mcp/xhs/data:/app/data
-      - ./mcp/xhs/images:/app/images
-    environment:
-      COOKIES_PATH: /app/data/cookies.json
-      HOME: /app/data/home
-      XDG_CONFIG_HOME: /app/data/config
-      AUTH_TOKEN: ${XHS_MCP_AUTH_TOKEN:-}
-    ports:
-      - '127.0.0.1:${XHS_MCP_PORT:-18060}:18060'
 
 volumes:
   tutor-flow-data:

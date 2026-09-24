@@ -5,6 +5,7 @@
  * 平台策略插入默认版本并标记生效。
  */
 import {
+  DEFAULT_XHS_PROMPT,
   DEFAULT_QUALITY_THRESHOLDS,
   DEFAULT_CONTENT_CENTER_SETTINGS,
   DEFAULT_SEARCH_BUDGET,
@@ -44,7 +45,7 @@ export async function seedDefaultSettings(
       id: DEFAULT_XHS_ACCOUNT_ID,
       alias: '小红书账号',
       platform: 'xiaohongshu',
-      secretRef: 'sidecar:xiaohongshu-mcp',
+      secretRef: 'local:content-only',
     })
     .onConflictDoNothing();
 
@@ -65,6 +66,14 @@ export async function seedDefaultSettings(
         createdBy: actor,
       });
     }
+  }
+
+  if ((await getSetting(db, 'xiaohongshu_prompt')) === null) {
+    await upsertSetting(db, {
+      key: 'xiaohongshu_prompt',
+      value: { systemPrompt: DEFAULT_XHS_PROMPT },
+      updatedBy: actor,
+    });
   }
 
   // 质量门槛

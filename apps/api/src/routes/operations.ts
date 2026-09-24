@@ -6,40 +6,42 @@
  */
 import {
   appendAuditEvent,
+  getSetting,
   getActivePlatformPolicy,
-  getPublishJobDetails,
-  findAccount,
-  listPublishJobs,
+  getRunWithJob,
   listRunSources,
   listSettings,
-  requirePublishJob,
-  updatePublishJobStatus,
-  updateReceiptVerification,
-  findReceiptByJob,
   type DbClient,
 } from '@tutor-flow/db';
 import {
+  LLM_TASKS,
+  PLATFORM_OPTIONS,
   parseXiaohongshuPolicy,
   parseContentCenterSettings,
   type QualityThresholds,
   type SearchBudget,
+  type LlmModelsConfig,
+  type ContentPromptsConfig,
   type XiaohongshuPolicy,
 } from '@tutor-flow/domain';
-import type { PublisherAdapter } from '@tutor-flow/integrations';
-import type { SecretProvider } from '@tutor-flow/config/server';
-import { count, desc, eq, inArray } from 'drizzle-orm';
+import {
+  encryptLocalSecret,
+  resolveDatabasePath,
+  type SecretProvider,
+} from '@tutor-flow/config/server';
+import { and, count, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import {
-  auditEvents,
+  workflowEvents,
   contentArtifacts,
   draftRevisions,
-  outboxRecords,
   platformPolicies,
-  publishJobs,
   queryPlans,
   workflowRuns,
+  researchFolders,
+  researchDocuments,
 } from '@tutor-flow/db';
 import { requireAuthenticated } from '../lib/auth.js';
 import { parseBody } from '../lib/http.js';
@@ -47,15 +49,26 @@ import { parseBody } from '../lib/http.js';
 export interface OperationsRoutesOptions {
   db: DbClient;
   env: import('@tutor-flow/config/server').ApiEnv;
-  adapter?: PublisherAdapter | null;
   secrets?: SecretProvider | null;
+  publishLlmModelsUpdate?: () => Promise<void>;
 }
 
 const operatorOnly = (actor: { kind: string } | undefined): boolean =>
   actor?.kind === 'operator';
 
 function safeSetting(key: string, value: unknown, version: number, updatedAt: Date) {
-  return { key, value, version, updatedAt };
+  let safeValue = value;
+  if (key === 'llm_models' && typeof value === 'object' && value !== null) {
+    const config = value as LlmModelsConfig;
+    safeValue = {
+      ...config,
+      providers: config.providers.map((provider) => {
+        const { apiKeyEncrypted, ...visibleProvider } = provider;
+        return { ...visibleProvider, hasApiKey: Boolean(apiKeyEncrypted) };
+      }),
+    };
+  }
+  return { key, value: safeValue, version, updatedAt };
 }
 
 function sumTokenUsage(value: unknown): number {
@@ -78,76 +91,210 @@ export function registerOperationsRoutes(
   const { db, env } = options;
   const authenticate = requireAuthenticated(env, db);
 
+  app.get(
+    '/api/v1/research-library',
+    { preHandler: authenticate },
+    async (_request, reply) => {
+      const [folders, documents] = await Promise.all([
+        db.db.select().from(researchFolders),
+        db.db.select().from(researchDocuments).orderBy(desc(researchDocuments.updatedAt)),
+      ]);
+      return reply.send({ folders, documents });
+    },
+  );
+
+  app.post(
+    '/api/v1/research-library/folders',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      if (!operatorOnly(request.actor))
+        return reply.code(403).send({ error: '仅运营人员可管理研究资料' });
+      const body = parseBody(
+        z
+          .object({
+            name: z.string().trim().min(1).max(100),
+            parentId: z.string().nullable().optional(),
+          })
+          .strict(),
+        request.body,
+      );
+      const [folder] = await db.db.insert(researchFolders).values(body).returning();
+      return reply.code(201).send(folder);
+    },
+  );
+
+  app.patch(
+    '/api/v1/research-library/folders/:id',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      if (!operatorOnly(request.actor))
+        return reply.code(403).send({ error: '仅运营人员可管理研究资料' });
+      const { id } = request.params as { id: string };
+      const body = parseBody(
+        z.object({ name: z.string().trim().min(1).max(100) }).strict(),
+        request.body,
+      );
+      const [folder] = await db.db
+        .update(researchFolders)
+        .set(body)
+        .where(eq(researchFolders.id, id))
+        .returning();
+      return folder
+        ? reply.send(folder)
+        : reply.code(404).send({ error: '文件夹不存在' });
+    },
+  );
+
+  app.delete(
+    '/api/v1/research-library/folders/:id',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      if (!operatorOnly(request.actor))
+        return reply.code(403).send({ error: '仅运营人员可管理研究资料' });
+      const { id } = request.params as { id: string };
+      const folders = await db.db.select().from(researchFolders);
+      const folderIds = new Set([id]);
+      let added = true;
+      while (added) {
+        added = false;
+        for (const folder of folders) {
+          if (
+            folder.parentId !== null &&
+            folderIds.has(folder.parentId) &&
+            !folderIds.has(folder.id)
+          ) {
+            folderIds.add(folder.id);
+            added = true;
+          }
+        }
+      }
+      await db.db.transaction(async (tx) => {
+        await tx
+          .delete(researchDocuments)
+          .where(inArray(researchDocuments.folderId, [...folderIds]));
+        await tx
+          .delete(researchFolders)
+          .where(inArray(researchFolders.id, [...folderIds]));
+      });
+      return reply.code(204).send();
+    },
+  );
+
+  app.post(
+    '/api/v1/research-library/documents',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      if (!operatorOnly(request.actor))
+        return reply.code(403).send({ error: '仅运营人员可管理研究资料' });
+      const body = parseBody(
+        z
+          .object({
+            title: z.string().trim().min(1).max(200),
+            markdown: z.string().max(500000),
+            folderId: z.string().nullable().optional(),
+          })
+          .strict(),
+        request.body,
+      );
+      const [document] = await db.db.insert(researchDocuments).values(body).returning();
+      return reply.code(201).send(document);
+    },
+  );
+
+  app.patch(
+    '/api/v1/research-library/documents/:id',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      if (!operatorOnly(request.actor))
+        return reply.code(403).send({ error: '仅运营人员可管理研究资料' });
+      const { id } = request.params as { id: string };
+      const body = parseBody(
+        z
+          .object({
+            title: z.string().trim().min(1).max(200),
+            markdown: z.string().max(500000),
+            folderId: z.string().nullable(),
+          })
+          .strict(),
+        request.body,
+      );
+      const [document] = await db.db
+        .update(researchDocuments)
+        .set({ ...body, updatedAt: new Date() })
+        .where(eq(researchDocuments.id, id))
+        .returning();
+      return document
+        ? reply.send(document)
+        : reply.code(404).send({ error: '研究资料不存在' });
+    },
+  );
+
+  app.delete(
+    '/api/v1/research-library/documents',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      if (!operatorOnly(request.actor))
+        return reply.code(403).send({ error: '仅运营人员可管理研究资料' });
+      const body = parseBody(
+        z.object({ ids: z.array(z.string()).min(1).max(500) }).strict(),
+        request.body,
+      );
+      await db.db
+        .delete(researchDocuments)
+        .where(inArray(researchDocuments.id, body.ids));
+      return reply.code(204).send();
+    },
+  );
+
   app.get('/api/v1/overview', { preHandler: authenticate }, async (_request, reply) => {
-    const [
-      running,
-      drafts,
-      publishQueue,
-      queryUsage,
-      artifactUsage,
-      activity,
-      loginAccount,
-    ] = await Promise.all([
+    const [running, drafts, queryUsage, artifactUsage, activity] = await Promise.all([
       db.db
         .select({ value: count() })
         .from(workflowRuns)
         .where(
-          inArray(workflowRuns.status, [
-            'QUEUED',
-            'RESEARCHING',
-            'WAITING_DIRECTION',
-            'GENERATING',
-            'MODERATING',
-            'NEEDS_REVIEW',
-            'PUBLISHING',
-            'RETRY_WAIT',
-            'NEEDS_HUMAN',
-          ]),
+          and(
+            inArray(workflowRuns.status, [
+              'QUEUED',
+              'RESEARCHING',
+              'WAITING_DIRECTION',
+              'GENERATING',
+              'MODERATING',
+              'NEEDS_REVIEW',
+              'PUBLISHING',
+              'RETRY_WAIT',
+              'NEEDS_HUMAN',
+            ]),
+            isNull(workflowRuns.deletedAt),
+          ),
         ),
       db.db
         .select({ value: count() })
         .from(draftRevisions)
-        .where(eq(draftRevisions.status, 'PENDING_REVIEW')),
-      db.db
-        .select({ value: count() })
-        .from(publishJobs)
+        .innerJoin(workflowRuns, eq(draftRevisions.runId, workflowRuns.id))
         .where(
-          inArray(publishJobs.status, [
-            'QUEUED',
-            'PUBLISHING',
-            'FAILED',
-            'UNKNOWN_OUTCOME',
-            'NEEDS_HUMAN',
-          ]),
+          and(
+            eq(draftRevisions.status, 'PENDING_REVIEW'),
+            isNull(draftRevisions.deletedAt),
+            isNull(workflowRuns.deletedAt),
+          ),
         ),
       db.db
         .select({ queries: queryPlans.queries, usage: queryPlans.usage })
         .from(queryPlans),
       db.db.select({ generation: contentArtifacts.generation }).from(contentArtifacts),
-      db.db.select().from(auditEvents).orderBy(desc(auditEvents.occurredAt)).limit(12),
-      env.XHS_MCP_ACCOUNT_ID === undefined
-        ? Promise.resolve(null)
-        : findAccount(db.db, env.XHS_MCP_ACCOUNT_ID),
+      db.db
+        .select({ event: workflowEvents, runId: workflowRuns.id })
+        .from(workflowEvents)
+        .innerJoin(workflowRuns, eq(workflowEvents.runId, workflowRuns.id))
+        .where(isNull(workflowRuns.deletedAt))
+        .orderBy(desc(workflowEvents.occurredAt), desc(workflowEvents.id))
+        .limit(12),
     ]);
     return reply.send({
       updatedAt: new Date().toISOString(),
-      loginAccount: {
-        bound: env.XHS_MCP_ACCOUNT_ID !== undefined,
-        mcpConfigured: env.XHS_MCP_URL !== undefined,
-        account:
-          loginAccount === null
-            ? null
-            : {
-                id: loginAccount.id,
-                alias: loginAccount.alias,
-                health: loginAccount.health,
-                lastAuthCheckAt: loginAccount.lastAuthCheckAt,
-              },
-      },
       metrics: {
         runningRuns: running[0]?.value ?? 0,
         pendingDrafts: drafts[0]?.value ?? 0,
-        pendingPublishes: publishQueue[0]?.value ?? 0,
         searchQueries: queryUsage.reduce(
           (total, item) =>
             total + (Array.isArray(item.queries) ? item.queries.length : 0),
@@ -163,15 +310,15 @@ export function registerOperationsRoutes(
             return total + sumTokenUsage(generation);
           }, 0),
       },
-      recentActivity: activity.map((item) => ({
-        id: item.id,
-        occurredAt: item.occurredAt,
-        actorType: item.actorType,
-        action: item.action,
-        resourceType: item.resourceType,
-        resourceId: item.resourceId,
-        runId: item.runId,
-        publishJobId: item.publishJobId,
+      recentActivity: activity.map(({ event, runId }) => ({
+        id: event.id,
+        occurredAt: event.occurredAt,
+        actorType: 'workflow',
+        action: event.name,
+        resourceType: '任务',
+        resourceId: runId,
+        runId,
+        payload: event.payload,
       })),
     });
   });
@@ -181,6 +328,9 @@ export function registerOperationsRoutes(
     { preHandler: authenticate },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+      if ((await getRunWithJob(db.db, id)) === null) {
+        return reply.code(404).send({ error: `运行任务不存在：${id}` });
+      }
       const result = await listRunSources(db.db, id);
       return reply.send({
         sources: result.sources.map((source) => ({
@@ -211,211 +361,6 @@ export function registerOperationsRoutes(
     },
   );
 
-  app.get(
-    '/api/v1/publish-jobs',
-    { preHandler: authenticate },
-    async (request, reply) => {
-      const query = request.query as { status?: string; limit?: string; offset?: string };
-      const statuses = [
-        'QUEUED',
-        'PUBLISHING',
-        'SUCCEEDED',
-        'FAILED',
-        'UNKNOWN_OUTCOME',
-        'NEEDS_HUMAN',
-        'CANCELLED',
-      ] as const;
-      const status = statuses.includes(query['status'] as never)
-        ? (query['status'] as (typeof statuses)[number])
-        : undefined;
-      const result = await listPublishJobs(db.db, {
-        status,
-        limit: Math.min(Math.max(Number(query['limit'] ?? 50) || 50, 1), 100),
-        offset: Math.max(Number(query['offset'] ?? 0) || 0, 0),
-      });
-      return reply.send({
-        total: result.total,
-        items: result.items.map(({ job, account, draft, receipt }) => ({
-          id: job.id,
-          runId: job.runId,
-          status: job.status,
-          attempts: job.attempts,
-          account: { id: account.id, alias: account.alias, health: account.health },
-          content: { revision: draft.revision, title: draft.title },
-          error: job.lastError,
-          receipt:
-            receipt === null
-              ? null
-              : {
-                  platformPostId: receipt.platformPostId,
-                  platformUrl: receipt.platformUrl,
-                  verification: receipt.verification,
-                  publishedAt: receipt.publishedAt,
-                },
-          createdAt: job.createdAt,
-          updatedAt: job.updatedAt,
-        })),
-      });
-    },
-  );
-
-  app.get(
-    '/api/v1/publish-jobs/:id',
-    { preHandler: authenticate },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const details = await getPublishJobDetails(db.db, id);
-      if (details === null) {
-        return reply.code(404).send({ error: `发布任务不存在：${id}` });
-      }
-      return reply.send({
-        id: details.job.id,
-        runId: details.job.runId,
-        status: details.job.status,
-        attempts: details.job.attempts,
-        error: details.job.lastError,
-        account: {
-          id: details.account.id,
-          alias: details.account.alias,
-          health: details.account.health,
-        },
-        draft: {
-          revision: details.draft.revision,
-          title: details.draft.title,
-          body: details.draft.body,
-          tags: details.draft.tags,
-          mediaObjectKeys: details.draft.mediaObjectKeys,
-        },
-        receipt: details.receipt,
-        createdAt: details.job.createdAt,
-        updatedAt: details.job.updatedAt,
-      });
-    },
-  );
-
-  app.post(
-    '/api/v1/publish-jobs/:id/retry',
-    { preHandler: authenticate },
-    async (request, reply) => {
-      const actor = request.actor;
-      if (!operatorOnly(actor)) {
-        return reply.code(403).send({ error: '仅运营人员可重试发布任务' });
-      }
-      const { id } = request.params as { id: string };
-      const body = parseBody(
-        z.object({ reason: z.string().trim().max(500).optional() }).strict(),
-        request.body ?? {},
-      );
-      const job = await requirePublishJob(db.db, id);
-      const error = job.lastError as { category?: string; message?: string } | null;
-      if (
-        job.status !== 'FAILED' ||
-        !['TRANSIENT', 'RATE_LIMITED'].includes(error?.category ?? '')
-      ) {
-        return reply.code(409).send({
-          error: '当前发布任务不是可安全重试的瞬时失败',
-          guidance: '请先完成授权、验证或未知结果核验',
-        });
-      }
-      await updatePublishJobStatus(db.db, id, 'QUEUED', { clearError: true });
-      await db.db.insert(outboxRecords).values({
-        eventName: 'publish.retry',
-        aggregateType: 'publish_job',
-        aggregateId: id,
-        payload: {
-          job: {
-            queue: 'publishing',
-            name: 'publish-job',
-            data: {
-              publishJobId: id,
-              accountId: job.accountId,
-              idempotencyKey: job.idempotencyKey,
-            },
-          },
-        },
-      });
-      await appendAuditEvent(db.db, {
-        actorType: 'operator',
-        actorId: actor?.id ?? 'operator',
-        action: 'publish.retried',
-        resourceType: 'publish_job',
-        resourceId: id,
-        runId: job.runId,
-        publishJobId: id,
-        payload: { reason: body.reason, previousCategory: error?.category },
-      });
-      return reply.send({ id, status: 'QUEUED' });
-    },
-  );
-
-  app.post(
-    '/api/v1/publish-jobs/:id/verify',
-    { preHandler: authenticate },
-    async (request, reply) => {
-      const actor = request.actor;
-      if (!operatorOnly(actor)) {
-        return reply.code(403).send({ error: '仅运营人员可执行发布核验' });
-      }
-      if (
-        options.adapter === null ||
-        options.adapter === undefined ||
-        (options.adapter.sessionMode !== 'sidecar' &&
-          (options.secrets === null || options.secrets === undefined))
-      ) {
-        return reply.code(503).send({ error: '发布适配器未配置' });
-      }
-      if (options.adapter.sessionMode === 'sidecar') {
-        return reply.code(409).send({
-          error: '上游 MCP 未提供按笔记 ID 自动核验接口，请人工确认发布结果',
-        });
-      }
-      const { id } = request.params as { id: string };
-      const details = await getPublishJobDetails(db.db, id);
-      if (details === null) {
-        return reply.code(404).send({ error: `发布任务不存在：${id}` });
-      }
-      const receipt = await findReceiptByJob(db.db, id);
-      if (receipt === null) {
-        return reply.code(409).send({ error: '任务没有可核验的发布回执，禁止盲目重发' });
-      }
-      const secretValue = await options.secrets!.resolveSecret(details.account.secretRef);
-      const status = await options.adapter.queryStatus(
-        { accountId: details.account.id, alias: details.account.alias, secretValue },
-        receipt.platformPostId,
-      );
-      if (status.exists) {
-        await updateReceiptVerification(db.db, id, 'VERIFIED', status.url, status.note);
-        await updatePublishJobStatus(db.db, id, 'SUCCEEDED');
-      } else {
-        await updateReceiptVerification(
-          db.db,
-          id,
-          'MISSING',
-          undefined,
-          status.note ?? '平台侧未找到内容',
-        );
-        await updatePublishJobStatus(db.db, id, 'NEEDS_HUMAN', {
-          lastError: { category: 'UNKNOWN_OUTCOME', message: '核验未找到平台内容' },
-        });
-      }
-      await appendAuditEvent(db.db, {
-        actorType: 'operator',
-        actorId: actor?.id ?? 'operator',
-        action: 'publish.verified',
-        resourceType: 'publish_job',
-        resourceId: id,
-        runId: details.job.runId,
-        publishJobId: id,
-        payload: { exists: status.exists },
-      });
-      return reply.send({
-        id,
-        exists: status.exists,
-        status: status.exists ? 'SUCCEEDED' : 'NEEDS_HUMAN',
-      });
-    },
-  );
-
   app.get('/api/v1/settings', { preHandler: authenticate }, async (_request, reply) => {
     const [settings, policy] = await Promise.all([
       listSettings(db.db),
@@ -440,10 +385,6 @@ export function registerOperationsRoutes(
       connections: {
         database: 'configured',
         redis: env.REDIS_URL === '' ? 'not_configured' : 'configured',
-        publisher:
-          options.adapter !== null && options.adapter !== undefined
-            ? 'configured'
-            : 'disabled',
         contentCenter:
           env.CONTENT_CENTER_URL === undefined ? 'not_configured' : 'configured',
       },
@@ -459,6 +400,9 @@ export function registerOperationsRoutes(
         return reply.code(403).send({ error: '仅运营人员可修改系统设置' });
       }
       const { key } = request.params as { key: string };
+      if (key === 'content_center' && actor?.role !== 'SUPER_ADMIN') {
+        return reply.code(403).send({ error: '仅超级管理员可修改内容中心设置' });
+      }
       const body = parseBody(
         z
           .object({
@@ -470,7 +414,18 @@ export function registerOperationsRoutes(
       );
       let value: unknown;
       try {
-        value = validateSettingValue(key, body.value);
+        if (key === 'llm_models') {
+          const input = validateLlmModelsInput(body.value);
+          const existing = await getSetting(db.db, key);
+          const existingConfig = existing?.value as LlmModelsConfig | undefined;
+          value = await persistLlmModels(
+            input,
+            existingConfig,
+            resolveDatabasePath(env.SQLITE_PATH),
+          );
+        } else {
+          value = validateSettingValue(key, body.value);
+        }
       } catch (error) {
         return reply
           .code(400)
@@ -491,6 +446,13 @@ export function registerOperationsRoutes(
         resourceId: key,
         payload: { version: saved.version },
       });
+      if (key === 'llm_models' && options.publishLlmModelsUpdate) {
+        try {
+          await options.publishLlmModelsUpdate();
+        } catch (error) {
+          request.log.error({ err: error }, '模型配置已保存，但通知 Worker 刷新失败');
+        }
+      }
       return reply.send(
         safeSetting(saved.key, saved.value, saved.version, saved.updatedAt),
       );
@@ -547,6 +509,79 @@ export function registerOperationsRoutes(
 
 /** 设置值的服务端范围校验，尤其禁止关闭强制人工审核。 */
 function validateSettingValue(key: string, value: unknown): unknown {
+  if (key === 'content_prompts') {
+    const config = z
+      .object({
+        platforms: z
+          .array(
+            z
+              .object({
+                id: z
+                  .string()
+                  .trim()
+                  .min(1)
+                  .max(80)
+                  .regex(/^[\w-]+$/),
+                name: z.string().trim().min(1).max(40),
+                prompts: z
+                  .array(
+                    z
+                      .object({
+                        id: z
+                          .string()
+                          .trim()
+                          .min(1)
+                          .max(80)
+                          .regex(/^[\w-]+$/),
+                        name: z.string().trim().min(1).max(24),
+                        content: z.string().max(20000),
+                        active: z.boolean(),
+                      })
+                      .strict(),
+                  )
+                  .max(100),
+              })
+              .strict(),
+          )
+          .max(50),
+      })
+      .strict()
+      .parse(value) as ContentPromptsConfig;
+    const platformIds = new Set<string>();
+    const platformNames = new Set<string>();
+    if (config.platforms.length !== PLATFORM_OPTIONS.length) {
+      throw new Error('提示词平台清单与当前支持的平台不一致');
+    }
+    for (const platform of config.platforms) {
+      const supportedPlatform = PLATFORM_OPTIONS.find((item) => item.id === platform.id);
+      if (!supportedPlatform || platform.name !== supportedPlatform.name) {
+        throw new Error('提示词平台必须与当前支持的平台清单一致');
+      }
+      const normalizedName = platform.name.toLocaleLowerCase();
+      if (platformIds.has(platform.id) || platformNames.has(normalizedName)) {
+        throw new Error('平台名称和标识不能重复');
+      }
+      platformIds.add(platform.id);
+      platformNames.add(normalizedName);
+      const promptIds = new Set<string>();
+      const activeCount = platform.prompts.filter((prompt) => prompt.active).length;
+      if (platform.prompts.length > 0 && activeCount !== 1) {
+        throw new Error(`平台「${platform.name}」需要且只能有一个使用中的提示词`);
+      }
+      for (const prompt of platform.prompts) {
+        if (promptIds.has(prompt.id)) {
+          throw new Error(`平台「${platform.name}」的提示词标识不能重复`);
+        }
+        promptIds.add(prompt.id);
+      }
+    }
+    return config;
+  }
+  if (key === 'xiaohongshu_prompt')
+    return z
+      .object({ systemPrompt: z.string().trim().min(50).max(20000) })
+      .strict()
+      .parse(value);
   if (key === 'content_center') {
     return parseContentCenterSettings(value);
   }
@@ -612,5 +647,104 @@ function validateSettingValue(key: string, value: unknown): unknown {
     }
     return value;
   }
+  if (key === 'llm_models') {
+    return validateLlmModelsInput(value);
+  }
   throw new Error(`不允许修改设置：${key}`);
+}
+
+type LlmModelsInput = Omit<LlmModelsConfig, 'providers'> & {
+  providers: Array<
+    Omit<LlmModelsConfig['providers'][number], 'apiKeyEncrypted'> & {
+      apiKey?: string;
+      hasApiKey?: boolean;
+    }
+  >;
+};
+
+function validateLlmModelsInput(value: unknown): LlmModelsInput {
+  const selectionSchema = z
+    .object({
+      providerId: z.string().trim().min(1).max(80),
+      modelId: z.string().trim().min(1).max(200),
+    })
+    .strict();
+  const parsed = z
+    .object({
+      providers: z
+        .array(
+          z
+            .object({
+              id: z.string().trim().min(1).max(80),
+              name: z.string().trim().min(1).max(100),
+              baseUrl: z.url(),
+              apiMode: z.enum(['chat', 'responses']),
+              apiKey: z.string().max(1000).optional(),
+              hasApiKey: z.boolean().optional(),
+              models: z.array(z.string().trim().min(1).max(200)).min(1).max(100),
+            })
+            .strict(),
+        )
+        .max(50),
+      defaultModel: selectionSchema.nullable(),
+      taskModels: z.record(z.string(), selectionSchema.nullable()).default({}),
+    })
+    .strict()
+    .parse(value) as LlmModelsInput;
+
+  const providerIds = new Set<string>();
+  for (const provider of parsed.providers) {
+    if (providerIds.has(provider.id)) throw new Error('Provider 标识不能重复');
+    providerIds.add(provider.id);
+    if (new Set(provider.models).size !== provider.models.length) {
+      throw new Error(`Provider「${provider.name}」中模型 ID 不能重复`);
+    }
+  }
+
+  const checkSelection = (selection: LlmModelsConfig['defaultModel']) => {
+    if (selection === null) return;
+    const provider = parsed.providers.find((item) => item.id === selection.providerId);
+    if (!provider || !provider.models.includes(selection.modelId)) {
+      throw new Error('默认模型或阶段模型必须选择已配置的 Provider 和模型');
+    }
+  };
+  if (parsed.providers.length > 0 && parsed.defaultModel === null) {
+    throw new Error('已配置 Provider 时必须设置默认模型');
+  }
+  checkSelection(parsed.defaultModel);
+
+  const taskIds = new Set(LLM_TASKS.map((task) => task.id));
+  for (const [taskId, selection] of Object.entries(parsed.taskModels)) {
+    if (!taskIds.has(taskId as (typeof LLM_TASKS)[number]['id'])) {
+      throw new Error(`未知的模型调用阶段：${taskId}`);
+    }
+    checkSelection(selection);
+  }
+  return parsed;
+}
+
+async function persistLlmModels(
+  input: LlmModelsInput,
+  existing: LlmModelsConfig | undefined,
+  databasePath: string,
+): Promise<LlmModelsConfig> {
+  const providers: LlmModelsConfig['providers'] = [];
+  for (const provider of input.providers) {
+    const previous = existing?.providers.find((item) => item.id === provider.id);
+    const apiKey = provider.apiKey?.trim() ?? '';
+    const apiKeyEncrypted =
+      apiKey !== ''
+        ? await encryptLocalSecret(apiKey, databasePath)
+        : previous?.apiKeyEncrypted;
+    if (!apiKeyEncrypted) {
+      throw new Error(`Provider「${provider.name}」需要配置 API Key`);
+    }
+    const { apiKey: _apiKey, hasApiKey: _hasApiKey, ...fields } = provider;
+    providers.push({ ...fields, ...(apiKeyEncrypted ? { apiKeyEncrypted } : {}) });
+  }
+  return {
+    providers,
+    defaultModel: input.defaultModel,
+    taskModels: input.taskModels,
+  };
 }

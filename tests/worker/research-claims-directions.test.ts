@@ -11,7 +11,11 @@ import {
 } from '@tutor-flow/db';
 import type { DbClient } from '@tutor-flow/db';
 import type { StepHandler } from '@tutor-flow/workflow';
-import { FakeLlmGateway } from '@tutor-flow/integrations';
+import {
+  createHtmlContentExtractor,
+  FakeLlmGateway,
+  FakePageFetcher,
+} from '@tutor-flow/integrations';
 
 import {
   createExtractClaimsHandler,
@@ -29,13 +33,21 @@ let db: DbClient;
 let extractClaims: StepHandler;
 let generateDirections: StepHandler;
 let llm: FakeLlmGateway;
+let fetcher: FakePageFetcher;
 const textCache = createInMemoryTextCache();
 
 beforeAll(async () => {
   await setupTestDatabase();
   db = createTestDb();
   llm = new FakeLlmGateway();
-  extractClaims = createExtractClaimsHandler({ db, llm, textCache });
+  fetcher = new FakePageFetcher();
+  extractClaims = createExtractClaimsHandler({
+    db,
+    llm,
+    textCache,
+    fetcher,
+    extractor: createHtmlContentExtractor(),
+  });
   generateDirections = createGenerateDirectionsHandler({ db, llm });
 });
 
@@ -121,6 +133,9 @@ describe('事实抽取与核验', () => {
       attempt: {},
     } as never);
     expect(output.outputRef).toBe('claims:2');
+    const extractionRequest = llm.calls.at(-1);
+    expect(extractionRequest?.maxTokens).toBe(16384);
+    expect(extractionRequest?.userPrompt).toContain('最多 8 条');
 
     const claimRows = await db.db.select().from(claims);
     expect(claimRows).toHaveLength(2);
@@ -184,6 +199,49 @@ describe('事实抽取与核验', () => {
         attempt: {},
       } as never),
     ).rejects.toThrow(/全部事实缺少来源支持/);
+  });
+
+  it('Worker 重启后正文缓存丢失时重新抓取并继续事实抽取', async () => {
+    llm.on(
+      (request) => request.task === 'claim_extraction',
+      () =>
+        JSON.stringify({
+          claims: [
+            {
+              statement: '恢复后重新取得的事实',
+              sources: ['https://postgresql.org/docs'],
+              confidence: 0.9,
+            },
+          ],
+        }),
+    );
+    const { run } = await seedRunWithSources('缓存丢失恢复测试');
+    await textCache.clearRun(run.id);
+    fetcher
+      .on('https://postgresql.org/docs', {
+        body:
+          '<html><title>PostgreSQL 官方文档</title><body>PostgreSQL 官方资料用于验证版本特性和数据库行为。'.repeat(
+            5,
+          ) + '</body></html>',
+      })
+      .on('https://blog.example.com/post', {
+        body:
+          '<html><title>技术博客解读</title><body>这篇技术博客提供相关背景、使用经验和升级注意事项。'.repeat(
+            5,
+          ) + '</body></html>',
+      });
+
+    const output = await extractClaims({
+      data: { runId: run.id, stepType: 'EXTRACT_CLAIMS' as const, attemptNo: 1 },
+      run,
+      attempt: {},
+    } as never);
+
+    expect(output.outputRef).toBe('claims:1');
+    expect(fetcher.calls).toEqual([
+      'https://postgresql.org/docs',
+      'https://blog.example.com/post',
+    ]);
   });
 
   it('提示词包含不可信数据边界规则', async () => {

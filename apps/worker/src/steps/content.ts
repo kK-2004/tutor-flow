@@ -5,9 +5,12 @@
  * 提示词版本化注册（5.1）；衍生稿不执行第二次研究（5.2）；
  * 审核门槛走统一校验模块（5.3）；草稿以修订一创建（5.4）。
  */
+import { createHash } from 'node:crypto';
+import { DEFAULT_XHS_PROMPT, XHS_OUTPUT_CONTRACT } from '@tutor-flow/domain';
 import { and, desc, eq } from 'drizzle-orm';
 
 import {
+  getSetting,
   contentArtifacts,
   draftRevisions,
   getActivePlatformPolicy,
@@ -46,12 +49,7 @@ export const PROMPT_REGISTRY: Record<string, PromptConfig> = {
   },
   'xhs-adapt@1': {
     version: 'xhs-adapt@1',
-    system: [
-      '你是小红书内容适配助手。',
-      '把规范文章改写为小红书图文：标题不超过 20 字，正文不超过 1000 字，',
-      '保留规范文章中的事实（引用其编号），不得新增任何事实。',
-      '输出 JSON 对象：{"title":"标题","body":"正文","tags":["标签"],"usedClaims":[1]}',
-    ].join('\n'),
+    system: DEFAULT_XHS_PROMPT + '\n\n' + XHS_OUTPUT_CONTRACT,
     buildUserPrompt: (input) => input,
     maxTokens: 2048,
   },
@@ -256,7 +254,35 @@ export function createAdaptXiaohongshuHandler(deps: ContentHandlersDeps): StepHa
     if (canonical === null) {
       throw new StepFailure('INTERNAL', '缺少规范文章：内容链路状态异常');
     }
-    const config = loadPromptConfig('xhs-adapt@1');
+    // 每次生成读取最新设置，已开始的调用保持同一提示词快照。
+    const savedPrompts = await getSetting(deps.db.db, 'content_prompts');
+    const contentPrompts = savedPrompts?.value as
+      | {
+          platforms?: Array<{
+            id: string;
+            prompts: Array<{ content: string; active: boolean }>;
+          }>;
+        }
+      | undefined;
+    const xhsPrompt = contentPrompts?.platforms?.find(
+      (platform) => platform.id === 'xiaohongshu',
+    );
+    const legacyPrompt =
+      contentPrompts === undefined
+        ? await getSetting(deps.db.db, 'xiaohongshu_prompt')
+        : null;
+    const style = contentPrompts
+      ? (xhsPrompt?.prompts.find((prompt) => prompt.active)?.content ??
+        DEFAULT_XHS_PROMPT)
+      : ((legacyPrompt?.value as { systemPrompt?: string } | undefined)?.systemPrompt ??
+        DEFAULT_XHS_PROMPT);
+    const system = style + '\n\n' + XHS_OUTPUT_CONTRACT;
+    const config = {
+      ...loadPromptConfig('xhs-adapt@1'),
+      system,
+      version: `xhs-adapt@${savedPrompts?.version ?? legacyPrompt?.version ?? 'default'}-${createHash('sha256').update(system).digest('hex').slice(0, 12)}`,
+      maxTokens: 4096,
+    };
     const claimSupport = await loadClaimSupport(deps.db, run.id);
     const claimIdByIndex = new Map<number, string>();
     claimSupport.forEach((claim, index) => {

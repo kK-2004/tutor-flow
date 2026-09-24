@@ -1,14 +1,66 @@
 'use client';
 
 import { Icon, type IconName } from '@tutor-flow/ui';
-import type { ContentCenterMedia, DraftMedia } from '@tutor-flow/domain';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  DEFAULT_XHS_PROMPT,
+  LLM_TASKS,
+  PLATFORM_OPTIONS,
+  type Platform,
+  type ContentPromptsConfig,
+  type LlmModelsConfig,
+  type ModelSelection,
+} from '@tutor-flow/domain';
+import type { DraftMedia } from '@tutor-flow/domain';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import { WorkflowDetailView } from './workflow-detail.js';
+import { formatTokenCount } from './number-format.js';
+import { ToastNotice } from './toast.js';
 
 import './styles.css';
 
-type ViewName =
-  'overview' | 'workflows' | 'drafts' | 'research' | 'publishes' | 'settings';
+type ViewName = 'overview' | 'workflows' | 'drafts' | 'research' | 'settings';
 type ThemeMode = 'light' | 'dark' | 'system';
+
+function contentPromptsFromSettings(
+  saved?: ContentPromptsConfig,
+  legacyXhsPrompt?: string,
+): ContentPromptsConfig {
+  return {
+    platforms: PLATFORM_OPTIONS.map((option) => {
+      const existing = saved?.platforms.find((item) => item.id === option.id);
+      if (existing)
+        return { id: option.id, name: option.name, prompts: existing.prompts };
+      if (!saved && option.id === 'xiaohongshu') {
+        return {
+          id: option.id,
+          name: option.name,
+          prompts: [
+            {
+              id: 'xhs-default',
+              name: '默认提示词',
+              content: legacyXhsPrompt ?? DEFAULT_XHS_PROMPT,
+              active: true,
+            },
+          ],
+        };
+      }
+      return { id: option.id, name: option.name, prompts: [] };
+    }),
+  };
+}
+
+type ModelProviderEditor = Omit<
+  LlmModelsConfig['providers'][number],
+  'apiKeyEncrypted'
+> & {
+  apiKey: string;
+  hasApiKey: boolean;
+};
+
+type LlmModelsEditor = Omit<LlmModelsConfig, 'providers'> & {
+  providers: ModelProviderEditor[];
+};
 
 interface AdminUser {
   id: string;
@@ -16,27 +68,10 @@ interface AdminUser {
   role: 'SUPER_ADMIN' | 'ADMIN';
 }
 
-interface LoginQrcode {
-  alreadyLoggedIn: boolean;
-  qrCodeDataUrl?: string;
-  expiresInSeconds: number;
-}
-
 interface ApiState {
-  loginAccount?: {
-    bound: boolean;
-    mcpConfigured: boolean;
-    account: {
-      id: string;
-      alias: string;
-      health: string;
-      lastAuthCheckAt: string | null;
-    } | null;
-  };
   metrics?: {
     runningRuns: number;
     pendingDrafts: number;
-    pendingPublishes: number;
     searchQueries: number;
     tokenUsage: number;
   };
@@ -46,6 +81,7 @@ interface ApiState {
     action: string;
     resourceType: string;
     resourceId: string;
+    payload?: unknown;
   }>;
 }
 
@@ -70,47 +106,6 @@ interface DraftItem {
   updatedAt: string;
 }
 
-interface PublishItem {
-  id: string;
-  runId: string;
-  status: string;
-  attempts: number;
-  account: { alias: string; health: string };
-  content: { revision: number; title: string };
-  error?: { category?: string; message?: string } | null;
-  receipt?: { platformPostId: string; platformUrl?: string; verification: string } | null;
-  updatedAt: string;
-}
-
-interface RunDetails extends RunItem {
-  cancelRequested: boolean;
-  humanGuidance?: string;
-  usage?: {
-    searchQueries: number;
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
-  steps: Array<{
-    id: string;
-    stepType: string;
-    attemptNo: number;
-    status: string;
-    errorCategory?: string | null;
-    errorMessage?: string | null;
-  }>;
-  directions: Array<{
-    id: string;
-    title: string;
-    summary: string;
-    targetAudience: string;
-    keywords: string[];
-    totalScore: number;
-    rank: number;
-  }>;
-  events: Array<{ id: number; name: string; occurredAt: string; payload: unknown }>;
-}
-
 interface DraftDetails {
   runId: string;
   revision: number;
@@ -122,31 +117,6 @@ interface DraftDetails {
   claimUsages: Array<{ claimId: string; locator: string }>;
   aigcDisclosure: string;
   updatedAt: string;
-}
-
-interface SourceData {
-  sources: Array<{
-    id: string;
-    title: string;
-    canonicalUrl: string;
-    domain: string;
-    language: string;
-    sourceType: string;
-    fetchStatus: string;
-    fetchNote?: string | null;
-    isPrimary: boolean;
-    totalScore?: number | null;
-    scoreFactors?: Record<string, number> | null;
-    clusterId?: string | null;
-    clusterRole?: string | null;
-  }>;
-  claims: Array<{
-    id: string;
-    statement: string;
-    confidence: number;
-    sourceIds: string[];
-    usedIn?: unknown;
-  }>;
 }
 
 interface ContentCenterConfig {
@@ -209,11 +179,7 @@ function viewFromLocation(): { view: ViewName; id?: string } {
     return { view: 'workflows', id: value.slice('workflow/'.length) };
   if (value.startsWith('draft/'))
     return { view: 'drafts', id: value.slice('draft/'.length) };
-  if (
-    ['overview', 'workflows', 'drafts', 'research', 'publishes', 'settings'].includes(
-      value,
-    )
-  )
+  if (['overview', 'workflows', 'drafts', 'research', 'settings'].includes(value))
     return { view: value as ViewName };
   return { view: 'overview' };
 }
@@ -225,10 +191,14 @@ function navigate(value: string): void {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body != null && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     credentials: 'include',
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    headers,
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as {
@@ -377,7 +347,6 @@ const navItems: Array<{ view: string; label: string; icon: IconName }> = [
   { view: 'workflows', label: '工作流', icon: 'workflow' },
   { view: 'drafts', label: '草稿箱', icon: 'draft' },
   { view: 'research', label: '研究资料', icon: 'research' },
-  { view: 'publishes', label: '发布管理', icon: 'publish' },
   { view: 'settings', label: '系统设置', icon: 'settings' },
 ];
 
@@ -407,7 +376,7 @@ function Shell({
             <Icon name="grid" />
           </span>
           <span>
-            内容工作台<span className="brand-subtitle">研究 · 审核 · 发布</span>
+            内容工作台<span className="brand-subtitle">研究 · 创作 · 审核</span>
           </span>
         </div>
         <div className="nav-section">工作台</div>
@@ -427,7 +396,7 @@ function Shell({
             </a>
           ))}
         </nav>
-        <div className="sidebar-footer">小红书单平台 · 服务端数据</div>
+        <div className="sidebar-footer">tutor-flow powered by kk</div>
       </aside>
       <main className="main">
         <header className="topbar">
@@ -452,7 +421,7 @@ function Shell({
             </button>
           </div>
         </header>
-        {children}
+        <div className="main-content-scroll">{children}</div>
       </main>
     </div>
   );
@@ -478,41 +447,60 @@ function PageHeading({
   );
 }
 
-function OverviewView({
-  data,
-  onRefresh,
-  onLogin,
-}: {
-  data?: ApiState;
-  onRefresh: () => void;
-  onLogin: () => void;
-}) {
-  const loginAccount = data?.loginAccount;
-  const account = loginAccount?.account;
-  const health = account?.health;
-  const loginState =
-    health === 'HEALTHY'
-      ? { label: '登录正常', tone: 'success' }
-      : health === 'AUTH_REQUIRED'
-        ? { label: '需要重新登录', tone: 'danger' }
-        : health === 'CHALLENGE_REQUIRED'
-          ? { label: '需要完成验证', tone: 'warning' }
-          : health === 'DISABLED'
-            ? { label: '账号已停用', tone: 'neutral' }
-            : account
-              ? { label: '待检查', tone: 'neutral' }
-              : { label: '未绑定', tone: 'neutral' };
+function activityLabel(action: string, payload: unknown): string {
+  const data =
+    typeof payload === 'object' && payload !== null
+      ? (payload as Record<string, unknown>)
+      : {};
+  const step =
+    typeof data['stepType'] === 'string'
+      ? ((
+          {
+            QUERY_PLANNING: '检索规划',
+            SEARCH: '检索资料',
+            FETCH_SOURCES: '抓取来源',
+            DEDUPE_SOURCES: '资料去重',
+            SCORE_SOURCES: '来源评分',
+            EXTRACT_CLAIMS: '提取事实',
+            GENERATE_DIRECTIONS: '生成方向',
+            SELECT_DIRECTION: '选择方向',
+            GENERATE_CANONICAL: '生成规范稿',
+            ADAPT_XIAOHONGSHU: '生成小红书内容',
+            MODERATE_CONTENT: '内容校验',
+            CREATE_DRAFT: '创建草稿',
+          } as Record<string, string>
+        )[data['stepType']] ?? data['stepType'])
+      : '任务';
+  if (action === 'run.created')
+    return data['triggerType'] === 'scheduler' ? '定时任务启动' : '任务已启动';
+  if (action === 'step.completed') return `${step}已完成`;
+  if (action === 'step.failed') return `${step}失败`;
+  if (action === 'run.status_changed')
+    return data['to'] === 'NEEDS_REVIEW' ? '内容已生成，等待审核' : `${step}进行中`;
+  return (
+    (
+      {
+        'run.direction_selected': '已选择内容方向',
+        'draft.approved': '草稿审核通过',
+        'run.cancelled': '任务已取消',
+        'run.waiting_direction': '等待选择方向',
+        'run.retry_scheduled': '步骤将重试',
+        'run.succeeded': '任务完成',
+      } as Record<string, string>
+    )[action] ?? action
+  );
+}
+
+function OverviewView({ data, onRefresh }: { data?: ApiState; onRefresh: () => void }) {
   const metrics = data?.metrics ?? {
     runningRuns: 0,
     pendingDrafts: 0,
-    pendingPublishes: 0,
     searchQueries: 0,
     tokenUsage: 0,
   };
   const cards = [
     ['执行中任务', metrics.runningRuns, '服务端实时统计'],
     ['待审核草稿', metrics.pendingDrafts, '需要运营处理'],
-    ['发布队列', metrics.pendingPublishes, '含失败与人工处理'],
     ['搜索查询', metrics.searchQueries, '当前工作空间累计'],
     ['模型 Token', metrics.tokenUsage, '已记录用量'],
   ];
@@ -532,75 +520,27 @@ function OverviewView({
         {cards.map(([label, value, note]) => (
           <div className="metric" key={String(label)}>
             <div className="metric-label">{label}</div>
-            <div className="metric-value">{Number(value).toLocaleString('zh-CN')}</div>
+            <div className="metric-value">
+              {label === '模型 Token'
+                ? formatTokenCount(Number(value))
+                : Number(value).toLocaleString('zh-CN')}
+            </div>
             <div className="metric-note">{note}</div>
           </div>
         ))}
       </div>
-      <section className="card login-account-card">
-        <div className="card-heading">
-          <h2>登录账号</h2>
-          <span>小红书 MCP 唯一绑定账号</span>
-        </div>
-        <button
-          type="button"
-          className="login-account-content login-account-trigger"
-          onClick={onLogin}
-        >
-          <div className="login-account-primary">
-            <div className="login-account-icon">
-              <Icon name="publish" />
-            </div>
-            <div>
-              <div className="metric-label">当前发布账号</div>
-              <strong className="login-account-name">
-                {account?.alias ??
-                  (loginAccount?.bound ? '绑定账号未注册' : '尚未绑定登录账号')}
-              </strong>
-              <div className="login-account-note">
-                {account
-                  ? '使用上游 MCP 容器内持久化的登录会话'
-                  : loginAccount?.bound
-                    ? '请检查 MCP 绑定的账号 ID 是否存在于平台账号列表'
-                    : '配置唯一绑定账号后，可在此查看登录健康状态'}
-              </div>
-            </div>
-          </div>
-          <div className="login-account-field">
-            <span>登录状态</span>
-            <span className={`status ${loginState.tone}`}>{loginState.label}</span>
-          </div>
-          <div className="login-account-field">
-            <span>MCP 接入</span>
-            <strong>{loginAccount?.mcpConfigured ? '地址已配置' : '未配置'}</strong>
-          </div>
-          <div className="login-account-field">
-            <span>最近认证检查</span>
-            <strong>
-              {account?.lastAuthCheckAt
-                ? formatTime(account.lastAuthCheckAt)
-                : '尚未检查'}
-            </strong>
-          </div>
-          <span className="login-account-action">
-            {health === 'HEALTHY' ? '查看登录状态' : '点击扫码登录'}
-          </span>
-        </button>
-      </section>
       <div className="grid-two">
         <section className="card">
           <div className="card-heading">
             <h2>最近活动</h2>
-            <span>服务端审计事件</span>
+            <span>任务执行进展</span>
           </div>
           <div className="card-body">
             {data?.recentActivity?.length ? (
               <div className="timeline">
-                {data.recentActivity.map((item) => (
+                {data.recentActivity.slice(0, 5).map((item) => (
                   <div className="timeline-item" key={item.id}>
-                    <strong>
-                      {item.action} · {item.resourceType}
-                    </strong>
+                    <strong>{activityLabel(item.action, item.payload)}</strong>
                     <span>
                       {formatTime(item.occurredAt)} · {item.resourceId}
                     </span>
@@ -623,9 +563,7 @@ function OverviewView({
           <div className="card-body">
             <div className="alert">
               <Icon name="info" />
-              <span>
-                小红书发布默认需要人工批准；结果未知的任务必须先核验，系统不会盲目重发。
-              </span>
+              <span>生成小红书风格标题、正文和标签，在草稿箱打磨审核后复制使用。</span>
             </div>
             <p className="muted small">
               研究正文只在研究步骤内即时使用，数据库保留来源元数据、事实关系和审计链。
@@ -637,11 +575,18 @@ function OverviewView({
   );
 }
 
-function WorkflowsView({ onOpen }: { onOpen: (id: string) => void }) {
+function WorkflowsView({
+  onOpen,
+  refreshKey,
+}: {
+  onOpen: (id: string) => void;
+  refreshKey: number;
+}) {
   const [items, setItems] = useState<RunItem[]>([]);
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [removing, setRemoving] = useState<string | null>(null);
   const load = useCallback(() => {
     void api<{ items: RunItem[] }>('/api/v1/runs')
       .then((value) => {
@@ -654,7 +599,7 @@ function WorkflowsView({ onOpen }: { onOpen: (id: string) => void }) {
   }, []);
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, refreshKey]);
   const filtered = useMemo(
     () =>
       items.filter(
@@ -664,6 +609,35 @@ function WorkflowsView({ onOpen }: { onOpen: (id: string) => void }) {
       ),
     [items, query, status],
   );
+  const remove = async (item: RunItem) => {
+    if (
+      !window.confirm(
+        '确定删除这个工作流？它会从列表中移除，历史数据会保留。正在执行或发布中的工作流不能删除。',
+      )
+    ) {
+      return;
+    }
+    setRemoving(item.runId);
+    try {
+      await api(`/api/v1/runs/${item.runId}`, { method: 'DELETE' });
+      setItems((current) =>
+        current.filter((candidate) => candidate.runId !== item.runId),
+      );
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '工作流删除失败');
+    } finally {
+      setRemoving(null);
+    }
+  };
+  const deletableStatuses = [
+    'WAITING_DIRECTION',
+    'NEEDS_REVIEW',
+    'NEEDS_HUMAN',
+    'SUCCEEDED',
+    'FAILED',
+    'CANCELLED',
+  ];
   return (
     <div className="content">
       <PageHeading title="工作流" description="搜索、筛选和处理可恢复的内容生产任务。" />
@@ -696,17 +670,25 @@ function WorkflowsView({ onOpen }: { onOpen: (id: string) => void }) {
           应用筛选
         </button>
       </div>
-      {error ? (
-        <div className="alert">
-          <Icon name="warning" />
-          {error}
-        </div>
-      ) : null}
+      <ToastNotice message={error} />
       <div className="run-list">
         {filtered.map((item) => (
-          <button className="run-row" key={item.runId} onClick={() => onOpen(item.runId)}>
+          <div
+            className="run-row run-row-clickable"
+            key={item.runId}
+            role="link"
+            tabIndex={0}
+            aria-label={`打开工作流：${item.topic}`}
+            onClick={() => onOpen(item.runId)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onOpen(item.runId);
+              }
+            }}
+          >
             <span className="run-topic">
-              <strong>{item.topic}</strong>
+              <strong title={item.topic}>{item.topic}</strong>
               <span>
                 {item.runId} · {item.platform}
               </span>
@@ -716,8 +698,27 @@ function WorkflowsView({ onOpen }: { onOpen: (id: string) => void }) {
               {item.directionMode === 'manual' ? '人工选向' : '自动选向'}
             </span>
             <span className="muted">{formatTime(item.updatedAt)}</span>
-            <span className="button compact">查看详情</span>
-          </button>
+            <span className="run-actions">
+              <button
+                className="button compact danger"
+                disabled={
+                  !deletableStatuses.includes(item.status) || removing === item.runId
+                }
+                title={
+                  deletableStatuses.includes(item.status)
+                    ? '删除工作流'
+                    : '运行中的工作流不能删除'
+                }
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void remove(item);
+                }}
+                onKeyDown={(event) => event.stopPropagation()}
+              >
+                {removing === item.runId ? '删除中…' : '删除'}
+              </button>
+            </span>
+          </div>
         ))}
         {filtered.length === 0 ? (
           <div className="card empty">
@@ -730,211 +731,42 @@ function WorkflowsView({ onOpen }: { onOpen: (id: string) => void }) {
   );
 }
 
-function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => void }) {
-  const [detail, setDetail] = useState<RunDetails | null>(null);
-  const [error, setError] = useState('');
-  const [selected, setSelected] = useState('');
-  const load = useCallback(() => {
-    void api<RunDetails>(`/api/v1/runs/${id}`)
-      .then(setDetail)
-      .catch((reason: unknown) =>
-        setError(reason instanceof Error ? reason.message : '任务加载失败'),
-      );
-  }, [id]);
-  useEffect(() => {
-    load();
-    const timer = window.setInterval(load, 5000);
-    return () => window.clearInterval(timer);
-  }, [load]);
-  const choose = () => {
-    if (!selected) return;
-    void api(`/api/v1/runs/${id}/direction-selection`, {
-      method: 'POST',
-      body: JSON.stringify({ directionId: selected }),
-    })
-      .then(load)
-      .catch((reason: unknown) =>
-        setError(reason instanceof Error ? reason.message : '选择方向失败'),
-      );
-  };
-  const cancel = () => {
-    void api(`/api/v1/runs/${id}/cancel`, { method: 'POST', body: '{}' })
-      .then(load)
-      .catch((reason: unknown) =>
-        setError(reason instanceof Error ? reason.message : '取消失败'),
-      );
-  };
-  const retry = () => {
-    void api(`/api/v1/runs/${id}/retry`, {
-      method: 'POST',
-      body: JSON.stringify({ reason: '管理台安全重试' }),
-    })
-      .then(load)
-      .catch((reason: unknown) =>
-        setError(reason instanceof Error ? reason.message : '重试失败'),
-      );
-  };
-  if (detail === null)
-    return (
-      <div className="content">
-        <button className="button" onClick={onBack}>
-          <Icon name="back" />
-          返回工作流
-        </button>
-        <div className="card empty">{error || '正在加载任务…'}</div>
-      </div>
-    );
-  return (
-    <div className="content">
-      <PageHeading
-        title={detail.topic}
-        description={`${detail.runId} · ${detail.platform} · 更新时间 ${formatTime(detail.updatedAt)}`}
-        action={
-          <div className="actions">
-            <button className="button" onClick={onBack}>
-              <Icon name="back" />
-              返回
-            </button>
-            {detail.status === 'FAILED' ? (
-              <button className="button" onClick={retry}>
-                <Icon name="retry" />
-                安全重试
-              </button>
-            ) : null}
-            {!['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(detail.status) ? (
-              <button className="button danger" onClick={cancel}>
-                取消运行
-              </button>
-            ) : null}
-          </div>
-        }
-      />
-      <div className="detail-grid">
-        <section className="card">
-          <div className="card-heading">
-            <h2>执行步骤</h2>
-            <Status value={detail.status} />
-          </div>
-          <div className="card-body">
-            <div className="steps">
-              {detail.steps.map((step) => (
-                <div
-                  className={`step ${step.status === 'SUCCEEDED' ? 'done' : ''}`}
-                  key={step.id}
-                >
-                  <span className="step-dot">
-                    {step.status === 'SUCCEEDED' ? (
-                      <Icon name="check" />
-                    ) : (
-                      <Icon name="clock" />
-                    )}
-                  </span>
-                  <div>
-                    <div className="step-name">{step.stepType}</div>
-                    <div className="step-note">
-                      尝试 {step.attemptNo}
-                      {step.errorMessage
-                        ? ` · ${step.errorCategory ?? '错误'}：${step.errorMessage}`
-                        : ''}
-                    </div>
-                  </div>
-                  <Status value={step.status} />
-                </div>
-              ))}
-              {detail.steps.length === 0 ? (
-                <div className="empty">步骤尚未落库</div>
-              ) : null}
-            </div>
-            {detail.usage ? (
-              <div className="usage-grid">
-                <span>搜索 {detail.usage.searchQueries}</span>
-                <span>Token {detail.usage.totalTokens}</span>
-                <span>提示词 {detail.usage.promptTokens}</span>
-                <span>输出 {detail.usage.completionTokens}</span>
-              </div>
-            ) : null}
-          </div>
-        </section>
-        <section className="card">
-          <div className="card-heading">
-            <h2>人工操作</h2>
-            <span>仅在停点显示</span>
-          </div>
-          <div className="card-body">
-            {detail.humanGuidance ? (
-              <div className="alert">
-                <Icon name="info" />
-                <span>{detail.humanGuidance}</span>
-              </div>
-            ) : null}
-            {detail.status === 'WAITING_DIRECTION' ? (
-              <>
-                <p className="muted">请选择一个候选方向，选择后将继续生成。</p>
-                <div className="direction-grid">
-                  {detail.directions.map((direction) => (
-                    <button
-                      className={`direction-card ${selected === direction.id ? 'selected' : ''}`}
-                      key={direction.id}
-                      onClick={() => setSelected(direction.id)}
-                    >
-                      <h3>{direction.title}</h3>
-                      <p>{direction.summary}</p>
-                      <span className="score">{direction.totalScore.toFixed(1)} 分</span>
-                    </button>
-                  ))}
-                </div>
-                <button className="button primary" disabled={!selected} onClick={choose}>
-                  确认方向
-                </button>
-              </>
-            ) : (
-              <div className="empty">
-                <Icon name="info" />
-                当前没有需要人工选择的停点
-              </div>
-            )}
-          </div>
-        </section>
-      </div>
-      <section className="card" style={{ marginTop: 16 }}>
-        <div className="card-heading">
-          <h2>持久化事件</h2>
-          <span>{detail.events.length} 条 · SSE 支持断线重放</span>
-        </div>
-        <div className="card-body">
-          <div className="timeline">
-            {detail.events.map((event) => (
-              <div className="timeline-item" key={event.id}>
-                <strong>{event.name}</strong>
-                <span>
-                  {formatTime(event.occurredAt)} · event {event.id}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-      {error ? (
-        <div className="alert" style={{ marginTop: 16 }}>
-          <Icon name="warning" />
-          {error}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function DraftsView({ onOpen }: { onOpen: (id: string) => void }) {
   const [items, setItems] = useState<DraftItem[]>([]);
   const [status, setStatus] = useState('PENDING_REVIEW');
+  const [error, setError] = useState('');
+  const [removing, setRemoving] = useState<string | null>(null);
   const load = useCallback(() => {
     void api<{ items: DraftItem[] }>(`/api/v1/drafts?status=${status}`)
-      .then((value) => setItems(value.items))
-      .catch(() => setItems([]));
+      .then((value) => {
+        setItems(value.items);
+        setError('');
+      })
+      .catch((reason: unknown) => {
+        setItems([]);
+        setError(reason instanceof Error ? reason.message : '草稿列表加载失败');
+      });
   }, [status]);
   useEffect(() => {
     load();
   }, [load]);
+  const remove = async (item: DraftItem) => {
+    if (!window.confirm('确定删除这份草稿？待审核的关联工作流会取消，历史数据会保留。')) {
+      return;
+    }
+    setRemoving(item.runId);
+    try {
+      await api(`/api/v1/drafts/${item.runId}`, { method: 'DELETE' });
+      setItems((current) =>
+        current.filter((candidate) => candidate.runId !== item.runId),
+      );
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '草稿删除失败');
+    } finally {
+      setRemoving(null);
+    }
+  };
   return (
     <div className="content">
       <PageHeading
@@ -957,9 +789,10 @@ function DraftsView({ onOpen }: { onOpen: (id: string) => void }) {
           刷新
         </button>
       </div>
+      <ToastNotice message={error} />
       <div className="card">
-        <div className="table-wrap">
-          <table>
+        <div className="table-wrap draft-table-wrap">
+          <table className="draft-table">
             <thead>
               <tr>
                 <th>标题</th>
@@ -974,19 +807,37 @@ function DraftsView({ onOpen }: { onOpen: (id: string) => void }) {
               {items.map((item) => (
                 <tr key={item.runId}>
                   <td>
-                    <strong>{item.title}</strong>
+                    <strong className="truncate-text" title={item.title}>
+                      {item.title}
+                    </strong>
                   </td>
-                  <td>{item.topic}</td>
+                  <td>
+                    <span className="truncate-text" title={item.topic}>
+                      {item.topic}
+                    </span>
+                  </td>
                   <td>v{item.revision}</td>
                   <td>
                     <Status value={item.status} />
                   </td>
                   <td>{formatTime(item.updatedAt)}</td>
                   <td>
-                    <button className="button compact" onClick={() => onOpen(item.runId)}>
-                      <Icon name="eye" />
-                      打开
-                    </button>
+                    <span className="run-actions">
+                      <button
+                        className="button compact"
+                        onClick={() => onOpen(item.runId)}
+                      >
+                        <Icon name="eye" />
+                        打开
+                      </button>
+                      <button
+                        className="button compact danger"
+                        disabled={removing === item.runId}
+                        onClick={() => void remove(item)}
+                      >
+                        {removing === item.runId ? '删除中…' : '删除'}
+                      </button>
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -1009,7 +860,6 @@ function DraftEditorView({ id, onBack }: { id: string; onBack: () => void }) {
   const [state, setState] = useState('');
   const [error, setError] = useState('');
   const [dirty, setDirty] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const load = useCallback(() => {
     void api<DraftDetails>(`/api/v1/drafts/${id}`)
       .then((value) => {
@@ -1064,69 +914,12 @@ function DraftEditorView({ id, onBack }: { id: string; onBack: () => void }) {
       body: JSON.stringify({ expectedRevision: draft.revision }),
     })
       .then(() => {
-        setState('已批准，发布任务已创建');
+        setState('审核通过，内容任务已完成');
         load();
       })
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : '批准失败'),
       );
-  };
-  const uploadImage = async (file: File) => {
-    if (draft === null) return;
-    setUploading(true);
-    setError('');
-    setState('正在上传图片');
-    try {
-      const init = await api<{
-        putUrl: string;
-        storageKey: string;
-        source: string;
-      }>('/api/v1/media/uploads/init', {
-        method: 'POST',
-        body: JSON.stringify({
-          filename: file.name,
-          size: file.size,
-          contentType: file.type,
-        }),
-      });
-      const put = await fetch(init.putUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': file.type },
-        body: file,
-      });
-      if (!put.ok) throw new Error(`图片直传失败（${put.status}）`);
-      const result = await api<{ media: ContentCenterMedia }>(
-        '/api/v1/media/uploads/complete',
-        {
-          method: 'POST',
-          body: JSON.stringify({ storageKey: init.storageKey, source: init.source }),
-        },
-      );
-      setDraft((current) =>
-        current === null
-          ? current
-          : {
-              ...current,
-              mediaObjectKeys: [...current.mediaObjectKeys, result.media],
-            },
-      );
-      setDirty(true);
-      setState('图片已上传，正在保存草稿');
-    } catch (reason) {
-      setState('图片上传失败');
-      setError(reason instanceof Error ? reason.message : '图片上传失败');
-    } finally {
-      setUploading(false);
-    }
-  };
-  const openImage = async (media: DraftMedia) => {
-    if (typeof media === 'string') return;
-    try {
-      const link = await api<{ url: string }>(`/api/v1/media/${media.fileId}/cdn-link`);
-      window.open(link.url, '_blank', 'noopener,noreferrer');
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法获取图片预览链接');
-    }
   };
   if (draft === null)
     return (
@@ -1153,9 +946,22 @@ function DraftEditorView({ id, onBack }: { id: string; onBack: () => void }) {
               <Icon name="save" />
               保存
             </button>
-            <button className="button primary" onClick={approve}>
+            <button
+              className="button"
+              onClick={() => {
+                void navigator.clipboard
+                  .writeText(
+                    `${draft.title}\n\n${draft.body}\n\n${draft.tags.map((tag) => `#${tag}`).join(' ')}`,
+                  )
+                  .then(() => setState('文案已复制，可手动粘贴到小红书'))
+                  .catch(() => setError('复制失败，请手动选中内容复制'));
+              }}
+            >
+              复制小红书文案
+            </button>
+            <button className="button primary" onClick={approve} disabled={dirty}>
               <Icon name="check" />
-              批准并发布
+              审核通过
             </button>
           </div>
         }
@@ -1207,71 +1013,6 @@ function DraftEditorView({ id, onBack }: { id: string; onBack: () => void }) {
                   }}
                 />
               </div>
-              <div className="form-field">
-                <label htmlFor="draft-aigc">AIGC 标识</label>
-                <select
-                  id="draft-aigc"
-                  value={draft.aigcDisclosure}
-                  onChange={(event) => {
-                    setDraft({ ...draft, aigcDisclosure: event.target.value });
-                    setDirty(true);
-                  }}
-                >
-                  <option value="disclosed">已标识</option>
-                  <option value="undisclosed">未标识</option>
-                </select>
-              </div>
-              <div className="form-field full">
-                <label htmlFor="draft-image">内容中心图片</label>
-                <input
-                  id="draft-image"
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  disabled={uploading || draft.mediaObjectKeys.length >= 30}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void uploadImage(file);
-                    event.target.value = '';
-                  }}
-                />
-                <span className="small muted">
-                  {uploading ? '上传中…' : '通过内容中心预签名地址直传 MinIO，最多 30 张'}
-                </span>
-                {draft.mediaObjectKeys.map((media, index) => (
-                  <div
-                    className="setting-row"
-                    key={`${typeof media === 'string' ? media : media.fileId}-${index}`}
-                  >
-                    <span className="setting-value">
-                      {typeof media === 'string'
-                        ? media
-                        : `${media.name} (#${media.fileId})`}
-                    </span>
-                    {typeof media !== 'string' ? (
-                      <button
-                        className="button compact"
-                        onClick={() => void openImage(media)}
-                      >
-                        预览
-                      </button>
-                    ) : null}
-                    <button
-                      className="button compact"
-                      onClick={() => {
-                        setDraft({
-                          ...draft,
-                          mediaObjectKeys: draft.mediaObjectKeys.filter(
-                            (_, at) => at !== index,
-                          ),
-                        });
-                        setDirty(true);
-                      }}
-                    >
-                      移除
-                    </button>
-                  </div>
-                ))}
-              </div>
             </div>
           </div>
         </section>
@@ -1286,257 +1027,1005 @@ function DraftEditorView({ id, onBack }: { id: string; onBack: () => void }) {
             <p className="muted small">
               标签：{draft.tags.map((tag) => `#${tag}`).join(' ') || '无'}
             </p>
-            <p className="muted small">
-              媒体：{draft.mediaObjectKeys.length} 项 · AIGC：
-              {draft.aigcDisclosure === 'disclosed' ? '已标识' : '未标识'}
-            </p>
           </div>
         </section>
       </div>
-      {error ? (
-        <div className="alert" style={{ marginTop: 16 }}>
-          <Icon name="warning" />
-          {error}
-        </div>
-      ) : null}
+      <ToastNotice message={error} />
     </div>
   );
 }
 
 function ResearchView() {
-  const [runId, setRunId] = useState('');
-  const [data, setData] = useState<SourceData | null>(null);
-  const load = () => {
-    if (!runId) return;
-    void api<SourceData>(`/api/v1/runs/${runId}/sources`)
-      .then(setData)
-      .catch(() => setData(null));
+  type Doc = {
+    id: string;
+    title: string;
+    markdown: string;
+    folderId: string | null;
+    updatedAt?: string;
   };
+  type Folder = { id: string; name: string; parentId: string | null };
+  const [library, setLibrary] = useState<{ documents: Doc[]; folders: Folder[] }>({
+    documents: [],
+    folders: [],
+  });
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [title, setTitle] = useState('');
+  const [markdown, setMarkdown] = useState('');
+  const [folderId, setFolderId] = useState('');
+  const [editorMode, setEditorMode] = useState<'edit' | 'split' | 'preview'>('split');
+  const markdownRef = useRef<HTMLTextAreaElement>(null);
+  const refresh = () =>
+    void api<typeof library>('/api/v1/research-library')
+      .then(setLibrary)
+      .catch(() => undefined);
+  useEffect(refresh, []);
+  const currentFolder =
+    library.folders.find((folder) => folder.id === activeFolderId) ?? null;
+  const childFolders = library.folders.filter(
+    (folder) => folder.parentId === activeFolderId,
+  );
+  const visibleFolders = search.trim()
+    ? library.folders.filter((folder) =>
+        folder.name.toLowerCase().includes(search.trim().toLowerCase()),
+      )
+    : childFolders;
+  const visibleDocs = library.documents.filter((doc) => {
+    const matchesFolder = search.trim() !== '' || doc.folderId === activeFolderId;
+    const matchesSearch = `${doc.title}\n${doc.markdown}`
+      .toLowerCase()
+      .includes(search.trim().toLowerCase());
+    return matchesFolder && matchesSearch;
+  });
+  const docsInFolder = (id: string) =>
+    library.documents.filter((doc) => doc.folderId === id).length;
+  const openEditor = (doc?: Doc) => {
+    setEditingId(doc?.id ?? null);
+    setTitle(doc?.title ?? '');
+    setMarkdown(doc?.markdown ?? '');
+    setFolderId(doc?.folderId ?? activeFolderId ?? '');
+    setEditorMode('split');
+    setEditorOpen(true);
+  };
+  const save = () => {
+    const payload = {
+      title: title.trim() || '未命名资料',
+      markdown,
+      folderId: folderId || null,
+    };
+    void api<Doc>(
+      editingId
+        ? `/api/v1/research-library/documents/${editingId}`
+        : '/api/v1/research-library/documents',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        body: JSON.stringify(payload),
+      },
+    ).then(() => {
+      setEditorOpen(false);
+      refresh();
+    });
+  };
+  const addFolder = () => {
+    const name = window.prompt('文件夹名称');
+    if (!name?.trim()) return;
+    void api('/api/v1/research-library/folders', {
+      method: 'POST',
+      body: JSON.stringify({ name: name.trim(), parentId: activeFolderId }),
+    }).then(refresh);
+  };
+  const renameFolder = (folder: Folder) => {
+    const name = window.prompt('重命名文件夹', folder.name);
+    if (!name?.trim() || name.trim() === folder.name) return;
+    void api(`/api/v1/research-library/folders/${folder.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: name.trim() }),
+    }).then(refresh);
+  };
+  const removeFolder = (folder: Folder) => {
+    const message = `确定删除文件夹“${folder.name}”吗？该文件夹及其子文件夹中的所有资料都会被递归删除，此操作无法撤销。`;
+    if (!window.confirm(message)) return;
+    const deletedFolderIds = new Set([folder.id]);
+    let foundChild = true;
+    while (foundChild) {
+      foundChild = false;
+      for (const child of library.folders) {
+        if (
+          child.parentId &&
+          deletedFolderIds.has(child.parentId) &&
+          !deletedFolderIds.has(child.id)
+        ) {
+          deletedFolderIds.add(child.id);
+          foundChild = true;
+        }
+      }
+    }
+    void api(`/api/v1/research-library/folders/${folder.id}`, { method: 'DELETE' }).then(
+      () => {
+        if (activeFolderId && deletedFolderIds.has(activeFolderId))
+          setActiveFolderId(folder.parentId);
+        refresh();
+      },
+    );
+  };
+  const deleteDocs = (ids: string[]) => {
+    if (
+      !ids.length ||
+      !window.confirm(`确定删除选中的 ${ids.length} 篇资料吗？此操作无法撤销。`)
+    )
+      return;
+    void api('/api/v1/research-library/documents', {
+      method: 'DELETE',
+      body: JSON.stringify({ ids }),
+    }).then(() => {
+      setSelected([]);
+      setSelectionMode(false);
+      refresh();
+    });
+  };
+  const insertMarkdown = (before: string, after = '') => {
+    const area = markdownRef.current;
+    if (!area) return;
+    const start = area.selectionStart;
+    const end = area.selectionEnd;
+    const selectedText = markdown.slice(start, end) || '文本';
+    const next = `${markdown.slice(0, start)}${before}${selectedText}${after}${markdown.slice(end)}`;
+    setMarkdown(next);
+    requestAnimationFrame(() => {
+      area.focus();
+      area.setSelectionRange(
+        start + before.length,
+        start + before.length + selectedText.length,
+      );
+    });
+  };
+  const previewLines = markdown.split('\n').map((line, index) => {
+    if (line.startsWith('### ')) return <h3 key={index}>{line.slice(4)}</h3>;
+    if (line.startsWith('## ')) return <h2 key={index}>{line.slice(3)}</h2>;
+    if (line.startsWith('# ')) return <h1 key={index}>{line.slice(2)}</h1>;
+    if (line.startsWith('> '))
+      return <blockquote key={index}>{line.slice(2)}</blockquote>;
+    if (line.startsWith('- ') || line.startsWith('* '))
+      return (
+        <div className="research-list-item" key={index}>
+          • {line.slice(2)}
+        </div>
+      );
+    return <p key={index}>{line || '\u00a0'}</p>;
+  });
+  if (editorOpen)
+    return (
+      <div className="research-editor-overlay">
+        <div className="research-editor-header">
+          <button className="button" onClick={() => setEditorOpen(false)}>
+            ← 返回资料库
+          </button>
+          <input
+            className="research-title-input"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="资料标题"
+          />
+          <select
+            className="field"
+            value={folderId}
+            onChange={(event) => setFolderId(event.target.value)}
+          >
+            <option value="">未分类</option>
+            {library.folders.map((folder) => (
+              <option key={folder.id} value={folder.id}>
+                {folder.name}
+              </option>
+            ))}
+          </select>
+          <div className="research-mode-switch">
+            {(['edit', 'split', 'preview'] as const).map((mode) => (
+              <button
+                key={mode}
+                className={editorMode === mode ? 'active' : ''}
+                onClick={() => setEditorMode(mode)}
+              >
+                {mode === 'edit' ? '编辑' : mode === 'split' ? '分栏' : '预览'}
+              </button>
+            ))}
+          </div>
+          <button className="button primary" onClick={save}>
+            保存资料
+          </button>
+        </div>
+        <div className="research-editor-toolbar">
+          <button onClick={() => insertMarkdown('# ')}>H</button>
+          <button onClick={() => insertMarkdown('**', '**')}>
+            <b>B</b>
+          </button>
+          <button onClick={() => insertMarkdown('*', '*')}>
+            <i>I</i>
+          </button>
+          <button onClick={() => insertMarkdown('- ')}>列表</button>
+          <button onClick={() => insertMarkdown('> ')}>引用</button>
+          <button onClick={() => insertMarkdown('`', '`')}>代码</button>
+        </div>
+        <div className={`research-editor-panes mode-${editorMode}`}>
+          {editorMode !== 'preview' ? (
+            <textarea
+              ref={markdownRef}
+              value={markdown}
+              onChange={(event) => setMarkdown(event.target.value)}
+              placeholder="# 研究主题\n\n在此输入或粘贴 Markdown 资料"
+            />
+          ) : null}
+          {editorMode !== 'edit' ? (
+            <div className="research-markdown-preview">{previewLines}</div>
+          ) : null}
+        </div>
+      </div>
+    );
   return (
     <div className="content">
       <PageHeading
         title="研究资料"
-        description="检查来源评分、重复聚类、抓取状态与事实引用位置。"
+        description="保存 Markdown 研究资料，创建任务时可选择资料并直接生成。"
       />
-      <div className="toolbar">
-        <input
-          className="field"
-          aria-label="运行任务 ID"
-          value={runId}
-          onChange={(event) => setRunId(event.target.value)}
-          placeholder="输入运行任务 ID"
-        />
-        <button className="button primary" onClick={load}>
-          <Icon name="search" />
-          加载来源
-        </button>
-      </div>
-      {data ? (
-        <>
-          <div className="source-grid">
-            {data.sources.map((source) => (
-              <article className="source-card" key={source.id}>
-                <h3>{source.title}</h3>
-                <p>
-                  {source.domain} · {source.language} · {source.sourceType}
-                </p>
-                <p>
-                  <a href={source.canonicalUrl} target="_blank" rel="noreferrer">
-                    {source.canonicalUrl}
-                  </a>
-                </p>
-                <div className="source-meta">
-                  <Status value={source.fetchStatus} />
-                  <span>{source.isPrimary ? '主要来源' : '辅助来源'}</span>
-                  <span>评分 {source.totalScore?.toFixed(1) ?? '—'}</span>
-                  {source.clusterId ? (
-                    <span>重复聚类：{source.clusterRole ?? '成员'}</span>
-                  ) : null}
-                </div>
-                {source.fetchNote ? (
-                  <p className="muted small">{source.fetchNote}</p>
-                ) : null}
-                {source.scoreFactors ? (
-                  <div className="factor-list">
-                    {Object.entries(source.scoreFactors).map(([key, value]) => (
-                      <span key={key}>
-                        {key} {Number(value).toFixed(2)}
-                      </span>
-                    ))}
+      <section className="card research-library">
+        <div className="card-heading">
+          <h2>资料库</h2>
+          <span>{library.documents.length} 篇</span>
+        </div>
+        <div className="card-body">
+          <div className="toolbar research-library-toolbar">
+            <input
+              className="field"
+              type="search"
+              aria-label="搜索资料"
+              placeholder="搜索资料标题或内容"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <button className="button" onClick={addFolder}>
+              创建文件夹
+            </button>
+            <button className="button primary" onClick={() => openEditor()}>
+              ＋ 新建资料
+            </button>
+            <span className="research-toolbar-spacer" />
+            {selectionMode ? (
+              <button
+                className="button"
+                onClick={() => {
+                  setSelectionMode(false);
+                  setSelected([]);
+                }}
+              >
+                取消选择
+              </button>
+            ) : null}
+            <button
+              className="button danger"
+              disabled={selectionMode && selected.length === 0}
+              onClick={() =>
+                selectionMode ? deleteDocs(selected) : setSelectionMode(true)
+              }
+            >
+              批量删除（{selected.length}）
+            </button>
+          </div>
+          <div className="research-breadcrumb">
+            {search.trim() ? (
+              <strong>搜索“{search.trim()}”</strong>
+            ) : (
+              <>
+                <button onClick={() => setActiveFolderId(null)}>资料库</button>
+                {currentFolder ? (
+                  <>
+                    {' '}
+                    / <strong>{currentFolder.name}</strong>
+                  </>
+                ) : (
+                  <strong>全部资料</strong>
+                )}
+              </>
+            )}
+          </div>
+          <div className="research-grid">
+            {(!activeFolderId || search.trim()) &&
+              visibleFolders.map((folder) => (
+                <article
+                  className="research-card research-folder-card"
+                  key={folder.id}
+                  onClick={() => {
+                    setActiveFolderId(folder.id);
+                    setSelected([]);
+                  }}
+                >
+                  <div className="research-folder-actions">
+                    <button
+                      aria-label="重命名文件夹"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        renameFolder(folder);
+                      }}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      aria-label="删除文件夹"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        removeFolder(folder);
+                      }}
+                    >
+                      ×
+                    </button>
                   </div>
+                  <Icon name="folder" className="research-folder-icon" />
+                  <h3>{folder.name}</h3>
+                  <p>{docsInFolder(folder.id)} 篇资料</p>
+                </article>
+              ))}
+            {visibleDocs.map((doc) => (
+              <article
+                className={`research-card ${selected.includes(doc.id) ? 'selected' : ''}`}
+                key={doc.id}
+                onClick={() =>
+                  selectionMode
+                    ? setSelected((ids) =>
+                        ids.includes(doc.id)
+                          ? ids.filter((id) => id !== doc.id)
+                          : [...ids, doc.id],
+                      )
+                    : openEditor(doc)
+                }
+              >
+                {selectionMode ? (
+                  <input
+                    className="research-checkbox"
+                    aria-label={`选择${doc.title}`}
+                    type="checkbox"
+                    checked={selected.includes(doc.id)}
+                    onChange={() => undefined}
+                  />
                 ) : null}
+                <h3>{doc.title}</h3>
+                <p>
+                  {doc.markdown
+                    .replace(/[#>*`|\-\[\]]/g, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim() || '（空白）'}
+                </p>
+                <div className="research-card-meta">
+                  <span>
+                    {library.folders.find((folder) => folder.id === doc.folderId)?.name ??
+                      '未分类'}
+                  </span>
+                  <span>{doc.updatedAt ? formatTime(doc.updatedAt) : ''}</span>
+                </div>
               </article>
             ))}
+            {search.trim() && visibleFolders.length === 0 && visibleDocs.length === 0 ? (
+              <div className="empty research-empty">没有找到匹配的文件夹或资料。</div>
+            ) : null}
+            {!search.trim() && childFolders.length === 0 && visibleDocs.length === 0 ? (
+              <div className="empty research-empty">
+                这里还没有资料，点击“新建资料”开始写作。
+              </div>
+            ) : null}
           </div>
-          <section className="card" style={{ marginTop: 16 }}>
-            <div className="card-heading">
-              <h2>事实引用</h2>
-              <span>{data.claims.length} 条</span>
-            </div>
-            <div className="card-body">
-              {data.claims.map((claim) => (
-                <div className="setting-row" key={claim.id}>
-                  <span className="setting-key">
-                    置信度 {Math.round(claim.confidence * 100)}%
-                  </span>
-                  <span>{claim.statement}</span>
-                  <span className="small muted">
-                    {claim.sourceIds.length} 个来源
-                    {claim.usedIn ? ` · 使用位置 ${JSON.stringify(claim.usedIn)}` : ''}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </section>
-        </>
-      ) : (
-        <div className="card empty">
-          <Icon name="book" />
-          输入运行任务 ID 查看研究链路
         </div>
-      )}
+      </section>
     </div>
   );
 }
 
-function PublishesView() {
-  const [items, setItems] = useState<PublishItem[]>([]);
-  const [status, setStatus] = useState('');
-  const load = useCallback(() => {
-    const suffix = status ? `?status=${status}` : '';
-    void api<{ items: PublishItem[] }>(`/api/v1/publish-jobs${suffix}`)
-      .then((value) => setItems(value.items))
-      .catch(() => setItems([]));
-  }, [status]);
-  useEffect(() => {
-    load();
-  }, [load]);
-  const retry = (id: string) => {
-    void api(`/api/v1/publish-jobs/${id}/retry`, {
-      method: 'POST',
-      body: JSON.stringify({ reason: '管理台手工重试' }),
-    })
-      .then(load)
-      .catch(() => undefined);
+function ModelSettingsSection({
+  value,
+  saving,
+  message,
+  tone,
+  onChange,
+  onSave,
+}: {
+  value: LlmModelsEditor;
+  saving: boolean;
+  message?: string;
+  tone?: 'danger' | 'info' | 'success';
+  onChange: (value: LlmModelsEditor) => void;
+  onSave: () => void;
+}) {
+  const selections: ModelSelection[] = value.providers.flatMap((provider) =>
+    provider.models
+      .filter((modelId) => modelId.trim() !== '')
+      .map((modelId) => ({ providerId: provider.id, modelId })),
+  );
+  const selectionValue = (selection: ModelSelection | null | undefined) =>
+    selection ? JSON.stringify(selection) : '';
+  const parseSelection = (serialized: string): ModelSelection | null => {
+    if (!serialized) return null;
+    try {
+      return JSON.parse(serialized) as ModelSelection;
+    } catch {
+      return null;
+    }
   };
-  const verify = (id: string) => {
-    void api(`/api/v1/publish-jobs/${id}/verify`, { method: 'POST', body: '{}' })
-      .then(load)
-      .catch(() => undefined);
+  const changeProvider = (
+    providerId: string,
+    update: (provider: ModelProviderEditor) => ModelProviderEditor,
+  ) =>
+    onChange({
+      ...value,
+      providers: value.providers.map((provider) =>
+        provider.id === providerId ? update(provider) : provider,
+      ),
+    });
+  const clearSelectionFor = (selection: ModelSelection | null) => {
+    const defaultModel =
+      selection !== null &&
+      value.defaultModel?.providerId === selection.providerId &&
+      value.defaultModel.modelId === selection.modelId
+        ? null
+        : value.defaultModel;
+    const taskModels = { ...value.taskModels };
+    if (selection !== null) {
+      for (const task of LLM_TASKS) {
+        const current = taskModels[task.id];
+        if (
+          current?.providerId === selection.providerId &&
+          current.modelId === selection.modelId
+        ) {
+          taskModels[task.id] = null;
+        }
+      }
+    }
+    return { defaultModel, taskModels };
   };
-  const stats = {
-    queued: items.filter((item) => ['QUEUED', 'PUBLISHING'].includes(item.status)).length,
-    succeeded: items.filter((item) => item.status === 'SUCCEEDED').length,
-    needsHuman: items.filter((item) =>
-      ['UNKNOWN_OUTCOME', 'NEEDS_HUMAN'].includes(item.status),
-    ).length,
-    attempts: items.reduce((total, item) => total + item.attempts, 0),
+  const addProvider = () =>
+    onChange({
+      ...value,
+      providers: [
+        ...value.providers,
+        {
+          id: `provider-${crypto.randomUUID()}`,
+          name: '',
+          baseUrl: '',
+          apiMode: 'chat',
+          apiKey: '',
+          hasApiKey: false,
+          models: [''],
+        },
+      ],
+    });
+  const removeProvider = (providerId: string) => {
+    const providers = value.providers.filter((provider) => provider.id !== providerId);
+    const defaultModel =
+      value.defaultModel?.providerId === providerId ? null : value.defaultModel;
+    const taskModels = { ...value.taskModels };
+    for (const task of LLM_TASKS) {
+      if (taskModels[task.id]?.providerId === providerId) taskModels[task.id] = null;
+    }
+    onChange({ ...value, providers, defaultModel, taskModels });
   };
+  const canSave =
+    value.providers.length > 0 &&
+    value.defaultModel !== null &&
+    value.providers.every(
+      (provider) =>
+        provider.name.trim() !== '' &&
+        provider.baseUrl.trim() !== '' &&
+        provider.models.length > 0 &&
+        provider.models.every((modelId) => modelId.trim() !== '') &&
+        (provider.apiKey.trim() !== '' || provider.hasApiKey),
+    );
+
   return (
-    <div className="content">
-      <PageHeading
-        title="发布管理"
-        description="查看账号队列、发布回执、核验状态和人工处理项。"
-      />
-      <div className="metrics metrics-compact">
-        <div className="metric">
-          <div className="metric-label">排队中</div>
-          <div className="metric-value">{stats.queued}</div>
-        </div>
-        <div className="metric">
-          <div className="metric-label">已成功</div>
-          <div className="metric-value">{stats.succeeded}</div>
-        </div>
-        <div className="metric">
-          <div className="metric-label">需人工</div>
-          <div className="metric-value">{stats.needsHuman}</div>
-        </div>
-        <div className="metric">
-          <div className="metric-label">累计尝试</div>
-          <div className="metric-value">{stats.attempts}</div>
-        </div>
+    <section className="card model-settings-card">
+      <div className="card-heading">
+        <h2>模型 Provider 与模型</h2>
+        <span>密钥加密保存</span>
       </div>
-      <div className="toolbar">
-        <select
-          className="select"
-          aria-label="发布状态"
-          value={status}
-          onChange={(event) => setStatus(event.target.value)}
-        >
-          <option value="">全部状态</option>
-          <option value="QUEUED">排队中</option>
-          <option value="PUBLISHING">发布中</option>
-          <option value="SUCCEEDED">已成功</option>
-          <option value="FAILED">失败</option>
-          <option value="UNKNOWN_OUTCOME">结果未知</option>
-          <option value="NEEDS_HUMAN">需人工处理</option>
-        </select>
-        <button className="button" onClick={load}>
-          <Icon name="retry" />
-          刷新
-        </button>
-      </div>
-      <div className="card">
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>内容</th>
-                <th>账号</th>
-                <th>状态</th>
-                <th>尝试</th>
-                <th>回执</th>
-                <th>时间</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={item.id}>
-                  <td>
-                    <strong>{item.content.title}</strong>
-                    <div className="small muted">{item.id}</div>
-                  </td>
-                  <td>{item.account.alias}</td>
-                  <td>
-                    <Status value={item.status} />
-                  </td>
-                  <td>{item.attempts}</td>
-                  <td>{item.receipt?.platformPostId ?? item.error?.category ?? '—'}</td>
-                  <td>{formatTime(item.updatedAt)}</td>
-                  <td>
-                    <div className="actions">
-                      {item.status === 'FAILED' ? (
-                        <button className="button compact" onClick={() => retry(item.id)}>
-                          <Icon name="retry" />
-                          重试
-                        </button>
-                      ) : null}
-                      {['UNKNOWN_OUTCOME', 'NEEDS_HUMAN'].includes(item.status) &&
-                      item.receipt ? (
-                        <button
-                          className="button compact"
-                          onClick={() => verify(item.id)}
-                        >
-                          <Icon name="check" />
-                          核验
-                        </button>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {items.length === 0 ? (
-            <div className="empty">
-              <Icon name="publish" />
-              暂无发布任务
+      <div className="card-body model-settings-body">
+        <p className="small muted">
+          每个 Provider 配置一次连接地址，可添加多个模型。未指定阶段模型时使用默认模型。
+        </p>
+        {value.providers.map((provider, providerIndex) => (
+          <section className="model-provider-card" key={provider.id}>
+            <div className="model-provider-heading">
+              <strong>{provider.name || `Provider ${providerIndex + 1}`}</strong>
+              <button
+                className="button compact"
+                onClick={() => removeProvider(provider.id)}
+              >
+                删除 Provider
+              </button>
             </div>
+            <div className="model-provider-grid">
+              <label className="form-field">
+                Provider 名称
+                <input
+                  value={provider.name}
+                  onChange={(event) =>
+                    changeProvider(provider.id, (current) => ({
+                      ...current,
+                      name: event.target.value,
+                    }))
+                  }
+                  placeholder="例如：OpenAI"
+                />
+              </label>
+              <label className="form-field">
+                Base URL
+                <input
+                  type="url"
+                  value={provider.baseUrl}
+                  onChange={(event) =>
+                    changeProvider(provider.id, (current) => ({
+                      ...current,
+                      baseUrl: event.target.value,
+                    }))
+                  }
+                  placeholder="https://api.example.com/v1"
+                />
+              </label>
+              <label className="form-field">
+                API 模式
+                <select
+                  value={provider.apiMode}
+                  onChange={(event) =>
+                    changeProvider(provider.id, (current) => ({
+                      ...current,
+                      apiMode: event.target.value as 'chat' | 'responses',
+                    }))
+                  }
+                >
+                  <option value="chat">Chat Completions</option>
+                  <option value="responses">Responses</option>
+                </select>
+              </label>
+              <label className="form-field">
+                API Key
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={provider.apiKey}
+                  onChange={(event) =>
+                    changeProvider(provider.id, (current) => ({
+                      ...current,
+                      apiKey: event.target.value,
+                    }))
+                  }
+                  placeholder={provider.hasApiKey ? '留空保持当前密钥' : '输入 API Key'}
+                />
+              </label>
+            </div>
+            <div className="model-list">
+              <strong>模型</strong>
+              {provider.models.map((modelId, modelIndex) => (
+                <div className="model-list-row" key={`${provider.id}-${modelIndex}`}>
+                  <input
+                    aria-label={`${provider.name || 'Provider'} 模型 ID`}
+                    value={modelId}
+                    onChange={(event) => {
+                      const previousSelection = modelId
+                        ? { providerId: provider.id, modelId }
+                        : null;
+                      const cleared = clearSelectionFor(previousSelection);
+                      onChange({
+                        ...value,
+                        providers: value.providers.map((current) =>
+                          current.id === provider.id
+                            ? {
+                                ...current,
+                                models: current.models.map((item, index) =>
+                                  index === modelIndex ? event.target.value : item,
+                                ),
+                              }
+                            : current,
+                        ),
+                        ...cleared,
+                      });
+                    }}
+                    placeholder="模型 ID，例如 gpt-4.1-mini"
+                  />
+                  <button
+                    className="button compact"
+                    disabled={provider.models.length <= 1}
+                    onClick={() => {
+                      const cleared = clearSelectionFor(
+                        modelId ? { providerId: provider.id, modelId } : null,
+                      );
+                      onChange({
+                        ...value,
+                        providers: value.providers.map((current) =>
+                          current.id === provider.id
+                            ? {
+                                ...current,
+                                models: current.models.filter(
+                                  (_, index) => index !== modelIndex,
+                                ),
+                              }
+                            : current,
+                        ),
+                        ...cleared,
+                      });
+                    }}
+                  >
+                    移除
+                  </button>
+                </div>
+              ))}
+              <button
+                className="button compact"
+                onClick={() =>
+                  changeProvider(provider.id, (current) => ({
+                    ...current,
+                    models: [...current.models, ''],
+                  }))
+                }
+              >
+                添加模型
+              </button>
+            </div>
+          </section>
+        ))}
+        <button className="button" onClick={addProvider}>
+          添加 Provider
+        </button>
+        <div className="model-selection-grid">
+          <label className="form-field">
+            默认模型
+            <select
+              value={selectionValue(value.defaultModel)}
+              onChange={(event) =>
+                onChange({ ...value, defaultModel: parseSelection(event.target.value) })
+              }
+            >
+              <option value="">请选择默认模型</option>
+              {selections.map((selection) => {
+                const provider = value.providers.find(
+                  (item) => item.id === selection.providerId,
+                );
+                return (
+                  <option
+                    key={selectionValue(selection)}
+                    value={selectionValue(selection)}
+                  >
+                    {provider?.name || 'Provider'} / {selection.modelId}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+          <div className="model-task-overrides">
+            <strong>阶段模型（可选，留空时使用默认模型）</strong>
+            {LLM_TASKS.map((task) => (
+              <label className="model-task-row" key={task.id}>
+                <span>{task.label}</span>
+                <select
+                  value={selectionValue(value.taskModels[task.id])}
+                  onChange={(event) =>
+                    onChange({
+                      ...value,
+                      taskModels: {
+                        ...value.taskModels,
+                        [task.id]: parseSelection(event.target.value),
+                      },
+                    })
+                  }
+                >
+                  <option value="">使用默认模型</option>
+                  {selections.map((selection) => {
+                    const provider = value.providers.find(
+                      (item) => item.id === selection.providerId,
+                    );
+                    return (
+                      <option
+                        key={selectionValue(selection)}
+                        value={selectionValue(selection)}
+                      >
+                        {provider?.name || 'Provider'} / {selection.modelId}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="model-settings-footer">
+          <span className="small muted">
+            API Key 仅在保存时发送，使用本地加密密钥加密，之后不会再次返回浏览器。
+          </span>
+          <button
+            className="button primary"
+            disabled={!canSave || saving}
+            onClick={onSave}
+          >
+            {saving ? '保存中' : '保存模型设置'}
+          </button>
+        </div>
+        <ToastNotice message={message} tone={tone ?? 'info'} />
+      </div>
+    </section>
+  );
+}
+
+function ContentPromptSettingsSection({
+  value,
+  saving,
+  message,
+  tone,
+  onChange,
+  onSave,
+}: {
+  value: ContentPromptsConfig;
+  saving: boolean;
+  message?: string;
+  tone?: 'danger' | 'info' | 'success';
+  onChange: (value: ContentPromptsConfig) => void;
+  onSave: (value: ContentPromptsConfig) => void;
+}) {
+  const [selectedPlatformId, setSelectedPlatformId] = useState<Platform>(
+    PLATFORM_OPTIONS[0]!.id,
+  );
+  const [selectedPromptId, setSelectedPromptId] = useState('xhs-default');
+  const [draft, setDraft] = useState<{ name: string; content: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const availablePlatforms = useMemo(
+    () =>
+      PLATFORM_OPTIONS.map((option) => ({
+        ...option,
+        prompts: value.platforms.find((item) => item.id === option.id)?.prompts ?? [],
+      })),
+    [value.platforms],
+  );
+  const platform =
+    availablePlatforms.find((item) => item.id === selectedPlatformId) ??
+    availablePlatforms[0] ??
+    null;
+  const prompt = platform?.prompts.find((item) => item.id === selectedPromptId) ?? null;
+  const promptDraft = prompt
+    ? (draft ?? { name: prompt.name, content: prompt.content })
+    : null;
+  const dirty =
+    prompt !== null &&
+    promptDraft !== null &&
+    (promptDraft.name !== prompt.name || promptDraft.content !== prompt.content);
+
+  useEffect(() => {
+    if (!availablePlatforms.some((item) => item.id === selectedPlatformId)) {
+      const nextPlatform = availablePlatforms[0] ?? null;
+      if (nextPlatform) setSelectedPlatformId(nextPlatform.id);
+      const nextPrompt = nextPlatform?.prompts[0] ?? null;
+      setSelectedPromptId(nextPrompt?.id ?? '');
+      setDraft(
+        nextPrompt ? { name: nextPrompt.name, content: nextPrompt.content } : null,
+      );
+      return;
+    }
+    const selected = availablePlatforms
+      .find((item) => item.id === selectedPlatformId)
+      ?.prompts.find((item) => item.id === selectedPromptId);
+    if (!selected) {
+      const nextPrompt =
+        availablePlatforms.find((item) => item.id === selectedPlatformId)?.prompts[0] ??
+        null;
+      setSelectedPromptId(nextPrompt?.id ?? '');
+      setDraft(
+        nextPrompt ? { name: nextPrompt.name, content: nextPrompt.content } : null,
+      );
+    }
+  }, [value, selectedPlatformId, selectedPromptId, availablePlatforms]);
+
+  const persist = (nextValue: ContentPromptsConfig) => {
+    onChange(nextValue);
+    onSave(nextValue);
+  };
+  const selectPlatform = (nextPlatform: (typeof availablePlatforms)[number]) => {
+    setSelectedPlatformId(nextPlatform.id);
+    const nextPrompt = nextPlatform.prompts[0] ?? null;
+    setSelectedPromptId(nextPrompt?.id ?? '');
+    setDraft(nextPrompt ? { name: nextPrompt.name, content: nextPrompt.content } : null);
+    setConfirmDelete(null);
+  };
+  const selectPrompt = (id: string) => {
+    const nextPrompt = platform?.prompts.find((item) => item.id === id) ?? null;
+    setSelectedPromptId(id);
+    setDraft(nextPrompt ? { name: nextPrompt.name, content: nextPrompt.content } : null);
+    setConfirmDelete(null);
+  };
+  const addPrompt = () => {
+    if (!platform) return;
+    const nextPrompt = {
+      id: `prompt-${crypto.randomUUID()}`,
+      name: '未命名提示词',
+      content: '',
+      active: platform.prompts.length === 0,
+    };
+    const nextValue = {
+      platforms: value.platforms.map((item) =>
+        item.id === platform.id
+          ? { ...item, prompts: [...item.prompts, nextPrompt] }
+          : item,
+      ),
+    };
+    persist(nextValue);
+    setSelectedPromptId(nextPrompt.id);
+    setDraft({ name: nextPrompt.name, content: nextPrompt.content });
+  };
+  const removePrompt = () => {
+    if (!platform || !prompt) return;
+    const prompts = platform.prompts.filter((item) => item.id !== prompt.id);
+    if (prompt.active && prompts[0]) prompts[0] = { ...prompts[0], active: true };
+    persist({
+      platforms: value.platforms.map((item) =>
+        item.id === platform.id ? { ...item, prompts } : item,
+      ),
+    });
+    const nextPrompt = prompts[0] ?? null;
+    setSelectedPromptId(nextPrompt?.id ?? '');
+    setDraft(nextPrompt ? { name: nextPrompt.name, content: nextPrompt.content } : null);
+    setConfirmDelete(null);
+  };
+  const setActive = () => {
+    if (!platform || !prompt) return;
+    persist({
+      platforms: value.platforms.map((item) =>
+        item.id === platform.id
+          ? {
+              ...item,
+              prompts: item.prompts.map((entry) => ({
+                ...entry,
+                active: entry.id === prompt.id,
+              })),
+            }
+          : item,
+      ),
+    });
+  };
+  const savePrompt = () => {
+    if (!platform || !prompt || !promptDraft) return;
+    const name = promptDraft.name.trim() || '未命名提示词';
+    const nextPrompt = { ...prompt, name, content: promptDraft.content };
+    persist({
+      platforms: value.platforms.map((item) =>
+        item.id === platform.id
+          ? {
+              ...item,
+              prompts: item.prompts.map((entry) =>
+                entry.id === prompt.id ? nextPrompt : entry,
+              ),
+            }
+          : item,
+      ),
+    });
+    setDraft({ name, content: promptDraft.content });
+  };
+
+  return (
+    <section className="card content-prompts-card">
+      <div className="card-heading">
+        <h2>内容生成提示词</h2>
+        <span>热配置 · 下一次生成生效</span>
+      </div>
+      <p className="content-prompts-description">
+        按平台管理创作提示词。每个平台可以保存多个提示词，其中“使用中”的一个会在下一次生成时生效；已生成的草稿保持原文。输出格式和事实引用要求由系统固定。
+      </p>
+      <div className="content-prompts-grid">
+        <div className="content-prompts-column">
+          <div className="content-prompts-column-heading">平台</div>
+          {availablePlatforms.map((item) => (
+            <div
+              className={`content-prompt-item ${item.id === platform?.id ? 'selected' : ''}`}
+              key={item.id}
+            >
+              <button
+                className="content-prompt-select"
+                onClick={() => selectPlatform(item)}
+              >
+                <span className="content-prompt-name">{item.name}</span>
+                <span className="content-prompt-count">{item.prompts.length}</span>
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="content-prompts-column">
+          <div className="content-prompts-column-heading">
+            <span>{platform ? `${platform.name}的提示词` : '提示词'}</span>
+          </div>
+          {platform?.prompts.map((item) => (
+            <button
+              className={`content-prompt-item content-prompt-choice ${item.id === prompt?.id ? 'selected' : ''}`}
+              key={item.id}
+              onClick={() => selectPrompt(item.id)}
+            >
+              <span className="content-prompt-name">{item.name || '未命名提示词'}</span>
+              {item.active ? <span className="content-prompt-active">使用中</span> : null}
+            </button>
+          ))}
+          {platform ? (
+            <button className="content-prompt-add" onClick={addPrompt} disabled={saving}>
+              + 新建提示词
+            </button>
           ) : null}
         </div>
+        <div className="content-prompts-editor">
+          {!platform ? (
+            <div className="content-prompts-empty">
+              还没有平台，先在左侧新增一个平台。
+            </div>
+          ) : !prompt || !promptDraft ? (
+            <div className="content-prompts-empty">
+              {platform.name}下还没有提示词。
+              <br />
+              点击中间的“新建提示词”开始编写。
+            </div>
+          ) : (
+            <>
+              <label className="content-prompts-label" htmlFor="content-prompt-name">
+                提示词名称
+              </label>
+              <input
+                id="content-prompt-name"
+                maxLength={24}
+                value={promptDraft.name}
+                disabled={saving}
+                onChange={(event) =>
+                  setDraft({ ...promptDraft, name: event.target.value })
+                }
+              />
+              <label
+                className="content-prompts-label content-prompts-content-label"
+                htmlFor="content-prompt-content"
+              >
+                提示词内容
+              </label>
+              <textarea
+                id="content-prompt-content"
+                maxLength={20000}
+                value={promptDraft.content}
+                disabled={saving}
+                onChange={(event) =>
+                  setDraft({ ...promptDraft, content: event.target.value })
+                }
+              />
+              <div className="content-prompts-actions">
+                <button
+                  className={`button danger ${confirmDelete === `prompt-${prompt.id}` ? 'confirm' : ''}`}
+                  disabled={saving}
+                  onClick={() => {
+                    const key = `prompt-${prompt.id}`;
+                    if (confirmDelete === key) removePrompt();
+                    else setConfirmDelete(key);
+                  }}
+                >
+                  {confirmDelete === `prompt-${prompt.id}` ? '确认删除' : '删除'}
+                </button>
+                <span className="content-prompts-status">
+                  {dirty ? '有未保存的修改' : `${promptDraft.content.length} 字`}
+                </span>
+                {!prompt.active ? (
+                  <button className="button" onClick={setActive} disabled={saving}>
+                    设为使用中
+                  </button>
+                ) : null}
+                <button
+                  className="button primary"
+                  disabled={!dirty || saving}
+                  onClick={savePrompt}
+                >
+                  {saving ? '保存中' : '保存提示词'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+      <div className="content-prompts-notice">
+        <ToastNotice message={message} tone={tone ?? 'info'} />
+      </div>
+    </section>
   );
 }
 
@@ -1548,9 +2037,18 @@ function SettingsView({ user }: { user: AdminUser }) {
     connections: Record<string, string>;
     secrets?: Record<string, string>;
   };
+  type SettingsNotice = {
+    message: string;
+    tone: 'danger' | 'info' | 'success';
+  };
   const [data, setData] = useState<SettingsData | null>(null);
   const [saving, setSaving] = useState('');
-  const [accountMessage, setAccountMessage] = useState('');
+  const [contentPrompts, setContentPrompts] = useState<ContentPromptsConfig>(() =>
+    contentPromptsFromSettings(),
+  );
+  const [promptMessage, setPromptMessage] = useState<SettingsNotice | null>(null);
+  const [modelMessage, setModelMessage] = useState<SettingsNotice | null>(null);
+  const [accountMessage, setAccountMessage] = useState<SettingsNotice | null>(null);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newAdminUsername, setNewAdminUsername] = useState('');
@@ -1563,6 +2061,11 @@ function SettingsView({ user }: { user: AdminUser }) {
   const [resetPassword, setResetPassword] = useState('');
   const [maxQueries, setMaxQueries] = useState(5);
   const [minDirectionScore, setMinDirectionScore] = useState(60);
+  const [llmModels, setLlmModels] = useState<LlmModelsEditor>({
+    providers: [],
+    defaultModel: null,
+    taskModels: {},
+  });
   const [contentCenter, setContentCenter] = useState<ContentCenterConfig>({
     source: 'minio',
     path: 'tutor-flow',
@@ -1574,12 +2077,32 @@ function SettingsView({ user }: { user: AdminUser }) {
     void api<SettingsData>('/api/v1/settings')
       .then((value) => {
         setData(value);
+        const prompts = value.items.find((item) => item.key === 'content_prompts')
+          ?.value as ContentPromptsConfig | undefined;
+        const legacyPrompt = value.items.find((item) => item.key === 'xiaohongshu_prompt')
+          ?.value as { systemPrompt?: string } | undefined;
+        setContentPrompts(
+          contentPromptsFromSettings(prompts, legacyPrompt?.systemPrompt),
+        );
         const budget = value.items.find((item) => item.key === 'search_budget')?.value as
           { maxQueries?: number } | undefined;
         const quality = value.items.find((item) => item.key === 'quality_thresholds')
           ?.value as { minDirectionScore?: number } | undefined;
         setMaxQueries(budget?.maxQueries ?? 5);
         setMinDirectionScore(quality?.minDirectionScore ?? 60);
+        const models = value.items.find((item) => item.key === 'llm_models')?.value as
+          Partial<LlmModelsEditor> | undefined;
+        if (models) {
+          setLlmModels({
+            providers: (models.providers ?? []).map((provider) => ({
+              ...provider,
+              apiKey: '',
+              hasApiKey: Boolean(provider.hasApiKey),
+            })),
+            defaultModel: models.defaultModel ?? null,
+            taskModels: models.taskModels ?? {},
+          });
+        }
         const content = value.items.find((item) => item.key === 'content_center')
           ?.value as ContentCenterConfig | undefined;
         if (content) setContentCenter(content);
@@ -1596,7 +2119,7 @@ function SettingsView({ user }: { user: AdminUser }) {
   }, [user.role]);
   useEffect(() => loadAdmins(), [loadAdmins]);
   const changeOwnPassword = () => {
-    setAccountMessage('');
+    setAccountMessage(null);
     void api('/api/v1/auth/change-password', {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword }),
@@ -1604,14 +2127,20 @@ function SettingsView({ user }: { user: AdminUser }) {
       .then(() => {
         setCurrentPassword('');
         setNewPassword('');
-        setAccountMessage('密码已修改，其他登录会话已失效');
+        setAccountMessage({
+          message: '密码已修改，其他登录会话已失效',
+          tone: 'success',
+        });
       })
       .catch((reason: unknown) =>
-        setAccountMessage(reason instanceof Error ? reason.message : '密码修改失败'),
+        setAccountMessage({
+          message: reason instanceof Error ? reason.message : '密码修改失败',
+          tone: 'danger',
+        }),
       );
   };
   const createAdmin = () => {
-    setAccountMessage('');
+    setAccountMessage(null);
     void api('/api/v1/admin/users', {
       method: 'POST',
       body: JSON.stringify({ username: newAdminUsername, password: newAdminPassword }),
@@ -1619,16 +2148,19 @@ function SettingsView({ user }: { user: AdminUser }) {
       .then(() => {
         setNewAdminUsername('');
         setNewAdminPassword('');
-        setAccountMessage('ADMIN 已创建');
+        setAccountMessage({ message: 'ADMIN 已创建', tone: 'success' });
         loadAdmins();
       })
       .catch((reason: unknown) =>
-        setAccountMessage(reason instanceof Error ? reason.message : '管理员创建失败'),
+        setAccountMessage({
+          message: reason instanceof Error ? reason.message : '管理员创建失败',
+          tone: 'danger',
+        }),
       );
   };
   const resetAdminPassword = () => {
     if (resetTarget === null) return;
-    setAccountMessage('');
+    setAccountMessage(null);
     void api<{ password?: string }>(
       `/api/v1/admin/users/${resetTarget.id}/reset-password`,
       {
@@ -1641,16 +2173,20 @@ function SettingsView({ user }: { user: AdminUser }) {
       },
     )
       .then((value) => {
-        setAccountMessage(
-          value.password
+        setAccountMessage({
+          message: value.password
             ? `已重置 ${resetTarget.username} 的密码，一次性新密码：${value.password}`
             : `已重置 ${resetTarget.username} 的密码`,
-        );
+          tone: 'success',
+        });
         setResetTarget(null);
         setResetPassword('');
       })
       .catch((reason: unknown) =>
-        setAccountMessage(reason instanceof Error ? reason.message : '密码重置失败'),
+        setAccountMessage({
+          message: reason instanceof Error ? reason.message : '密码重置失败',
+          tone: 'danger',
+        }),
       );
   };
   const updateSetting = (key: string, value: unknown) => {
@@ -1664,6 +2200,20 @@ function SettingsView({ user }: { user: AdminUser }) {
       }),
     })
       .then((saved) => {
+        if (key === 'llm_models') {
+          const configured = saved.value as LlmModelsEditor;
+          setLlmModels({
+            ...configured,
+            providers: configured.providers.map((provider) => ({
+              ...provider,
+              apiKey: '',
+              hasApiKey: Boolean(provider.hasApiKey),
+            })),
+          });
+        }
+        if (key === 'content_prompts') {
+          setContentPrompts(saved.value as ContentPromptsConfig);
+        }
         setData((current) =>
           current === null
             ? current
@@ -1678,8 +2228,23 @@ function SettingsView({ user }: { user: AdminUser }) {
               },
         );
         setSaving('');
+        if (key === 'llm_models')
+          setModelMessage({ message: '模型设置已保存', tone: 'success' });
+        if (key === 'content_prompts')
+          setPromptMessage({
+            message: '提示词设置已保存，下次内容生成时生效',
+            tone: 'success',
+          });
       })
-      .catch(() => setSaving('保存失败'));
+      .catch((error) => {
+        setSaving('保存失败');
+        const notice = {
+          message: error instanceof Error ? error.message : '保存失败',
+          tone: 'danger' as const,
+        };
+        if (key === 'llm_models') setModelMessage(notice);
+        else if (key === 'content_prompts') setPromptMessage(notice);
+      });
   };
   const setting = (key: string): SettingItem | undefined =>
     data?.items.find((item) => item.key === key);
@@ -1694,7 +2259,6 @@ function SettingsView({ user }: { user: AdminUser }) {
     | undefined;
   const budget = setting('search_budget')?.value as
     { maxQueries?: number; maxResultsPerQuery?: number; maxFetches?: number } | undefined;
-  const aliases = setting('model_aliases')?.value;
   return (
     <>
       <div className="content">
@@ -1702,6 +2266,26 @@ function SettingsView({ user }: { user: AdminUser }) {
           title="系统设置"
           description="管理非敏感运行参数、平台策略引用和连接健康状态。"
         />
+        {data ? (
+          <ModelSettingsSection
+            value={llmModels}
+            saving={saving === 'llm_models'}
+            message={modelMessage?.message}
+            tone={modelMessage?.tone}
+            onChange={setLlmModels}
+            onSave={() => updateSetting('llm_models', llmModels)}
+          />
+        ) : null}
+        {data ? (
+          <ContentPromptSettingsSection
+            value={contentPrompts}
+            saving={saving === 'content_prompts'}
+            message={promptMessage?.message}
+            tone={promptMessage?.tone}
+            onChange={setContentPrompts}
+            onSave={(value) => updateSetting('content_prompts', value)}
+          />
+        ) : null}
         <div className="settings-grid">
           <section className="card">
             <div className="card-heading">
@@ -1711,11 +2295,6 @@ function SettingsView({ user }: { user: AdminUser }) {
             <div className="card-body">
               {data ? (
                 <>
-                  <div className="setting-row">
-                    <span className="setting-key">模型别名</span>
-                    <span className="setting-value">{JSON.stringify(aliases ?? {})}</span>
-                    <span className="small muted">只读引用</span>
-                  </div>
                   <div className="setting-editor">
                     <label htmlFor="setting-max-queries">搜索查询上限</label>
                     <input
@@ -1767,88 +2346,85 @@ function SettingsView({ user }: { user: AdminUser }) {
                     </button>
                   </div>
                   <div className="setting-row">
-                    <span className="setting-key">强制人工批准</span>
-                    <span className="status success">已启用且不可关闭</span>
-                    <span className="small muted">安全门禁</span>
-                  </div>
-                  <div className="setting-row">
                     <span className="setting-key">内容中心</span>
                     <span className="small muted">
                       令牌由服务端环境变量提供，以下参数保存后立即生效
                     </span>
                   </div>
-                  <div className="setting-editor">
-                    <label htmlFor="content-path">MinIO 上传路径</label>
-                    <input
-                      id="content-path"
-                      value={contentCenter.path}
-                      onChange={(event) =>
-                        setContentCenter({ ...contentCenter, path: event.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="setting-editor">
-                    <label htmlFor="content-max-mb">图片大小上限（MiB）</label>
-                    <input
-                      id="content-max-mb"
-                      type="number"
-                      min="1"
-                      max="100"
-                      value={contentCenter.maxUploadBytes / (1024 * 1024)}
-                      onChange={(event) =>
-                        setContentCenter({
-                          ...contentCenter,
-                          maxUploadBytes: Number(event.target.value) * 1024 * 1024,
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="setting-editor">
-                    <label htmlFor="content-download-expiry">下载链接有效期（秒）</label>
-                    <input
-                      id="content-download-expiry"
-                      type="number"
-                      min="60"
-                      max="3600"
-                      value={contentCenter.downloadExpiresIn}
-                      onChange={(event) =>
-                        setContentCenter({
-                          ...contentCenter,
-                          downloadExpiresIn: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="setting-editor">
-                    <label htmlFor="content-cdn-expiry">
-                      预览链接有效期（秒，0 为永久）
-                    </label>
-                    <input
-                      id="content-cdn-expiry"
-                      type="number"
-                      min="0"
-                      max="3600"
-                      value={contentCenter.cdnExpiresIn}
-                      onChange={(event) =>
-                        setContentCenter({
-                          ...contentCenter,
-                          cdnExpiresIn: Number(event.target.value),
-                        })
-                      }
-                    />
-                    <button
-                      className="button compact"
-                      disabled={saving === 'content_center'}
-                      onClick={() => updateSetting('content_center', contentCenter)}
-                    >
-                      {saving === 'content_center' ? '保存中' : '保存内容中心设置'}
-                    </button>
-                  </div>
-                  <div className="setting-row">
-                    <span className="setting-key">xiaohongshu policy</span>
-                    <span className="setting-value">{data.policy.version}</span>
-                    <span className="status success">生效</span>
-                  </div>
+                  <fieldset
+                    disabled={user.role !== 'SUPER_ADMIN'}
+                    style={{ border: 0, padding: 0, margin: 0 }}
+                  >
+                    <div className="setting-editor">
+                      <label htmlFor="content-path">内容中心路径</label>
+                      <input
+                        id="content-path"
+                        value={contentCenter.path}
+                        onChange={(event) =>
+                          setContentCenter({ ...contentCenter, path: event.target.value })
+                        }
+                      />
+                    </div>
+                    <div className="setting-editor">
+                      <label htmlFor="content-max-mb">图片大小上限（MiB）</label>
+                      <input
+                        id="content-max-mb"
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={contentCenter.maxUploadBytes / (1024 * 1024)}
+                        onChange={(event) =>
+                          setContentCenter({
+                            ...contentCenter,
+                            maxUploadBytes: Number(event.target.value) * 1024 * 1024,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="setting-editor">
+                      <label htmlFor="content-download-expiry">
+                        下载链接有效期（秒）
+                      </label>
+                      <input
+                        id="content-download-expiry"
+                        type="number"
+                        min="60"
+                        max="3600"
+                        value={contentCenter.downloadExpiresIn}
+                        onChange={(event) =>
+                          setContentCenter({
+                            ...contentCenter,
+                            downloadExpiresIn: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="setting-editor">
+                      <label htmlFor="content-cdn-expiry">
+                        预览链接有效期（秒，0 为永久）
+                      </label>
+                      <input
+                        id="content-cdn-expiry"
+                        type="number"
+                        min="0"
+                        max="3600"
+                        value={contentCenter.cdnExpiresIn}
+                        onChange={(event) =>
+                          setContentCenter({
+                            ...contentCenter,
+                            cdnExpiresIn: Number(event.target.value),
+                          })
+                        }
+                      />
+                      <button
+                        className="button compact"
+                        disabled={saving === 'content_center'}
+                        onClick={() => updateSetting('content_center', contentCenter)}
+                      >
+                        {saving === 'content_center' ? '保存中' : '保存内容中心设置'}
+                      </button>
+                    </div>
+                  </fieldset>
                 </>
               ) : (
                 <div className="empty">设置服务暂不可用</div>
@@ -1865,7 +2441,6 @@ function SettingsView({ user }: { user: AdminUser }) {
                 data?.connections ?? {
                   database: 'unknown',
                   redis: 'unknown',
-                  publisher: 'unknown',
                 },
               ).map(([key, value]) => (
                 <div className="connection" key={key}>
@@ -1890,86 +2465,143 @@ function SettingsView({ user }: { user: AdminUser }) {
             </div>
           </section>
         </div>
-        <div className="settings-grid account-settings">
-          <section className="card">
-            <div className="card-heading">
-              <h2>我的账号</h2>
-              <span>{user.role === 'SUPER_ADMIN' ? '超级管理员' : '管理员'}</span>
+        <div className="account-settings">
+          <section className="card account-card password-card">
+            <div className="card-heading account-card-heading">
+              <div className="account-heading-title">
+                <span className="account-heading-icon">
+                  <Icon name="key" />
+                </span>
+                <div>
+                  <h2>修改密码</h2>
+                  <p>定期更新密码，保护管理账号安全。</p>
+                </div>
+              </div>
+              <span className="status neutral">
+                {user.role === 'SUPER_ADMIN' ? '超级管理员' : '管理员'}
+              </span>
             </div>
             <div className="card-body">
-              <div className="setting-row">
-                <span className="setting-key">用户名</span>
-                <strong>{user.username}</strong>
-                <span className="status neutral">{user.role}</span>
+              <div className="account-identity">
+                <span className="admin-avatar">
+                  {user.username.slice(0, 1).toUpperCase()}
+                </span>
+                <div>
+                  <strong>{user.username}</strong>
+                  <span>当前登录账号</span>
+                </div>
               </div>
-              <div className="setting-editor password-editor">
-                <label htmlFor="current-admin-password">当前密码</label>
-                <input
-                  id="current-admin-password"
-                  type="password"
-                  autoComplete="current-password"
-                  value={currentPassword}
-                  onChange={(event) => setCurrentPassword(event.target.value)}
-                />
-                <label htmlFor="new-admin-password">新密码</label>
-                <input
-                  id="new-admin-password"
-                  type="password"
-                  autoComplete="new-password"
-                  minLength={5}
-                  value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                />
+              <div className="account-form-stack">
+                <div className="account-field">
+                  <label htmlFor="current-admin-password">当前密码</label>
+                  <input
+                    id="current-admin-password"
+                    className="field"
+                    type="password"
+                    autoComplete="current-password"
+                    value={currentPassword}
+                    onChange={(event) => setCurrentPassword(event.target.value)}
+                  />
+                </div>
+                <div className="account-field">
+                  <label htmlFor="new-admin-password">新密码</label>
+                  <input
+                    id="new-admin-password"
+                    className="field"
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={5}
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                    aria-describedby="password-requirement"
+                  />
+                  <span className="account-field-hint" id="password-requirement">
+                    至少 5 位字符
+                  </span>
+                </div>
                 <button
-                  className="button compact"
+                  className="button primary account-submit"
                   disabled={currentPassword === '' || newPassword.length < 5}
                   onClick={changeOwnPassword}
                 >
-                  修改我的密码
+                  <Icon name="key" />
+                  修改密码
                 </button>
               </div>
             </div>
           </section>
           {user.role === 'SUPER_ADMIN' ? (
-            <section className="card">
-              <div className="card-heading">
-                <h2>管理员管理</h2>
-                <span>仅 SUPER_ADMIN 可操作</span>
+            <section className="card account-card admin-card">
+              <div className="card-heading account-card-heading">
+                <div className="account-heading-title">
+                  <span className="account-heading-icon">
+                    <Icon name="users" />
+                  </span>
+                  <div>
+                    <h2>管理员管理</h2>
+                    <p>创建管理账号，并为团队成员重置密码。</p>
+                  </div>
+                </div>
+                <span className="status neutral">超级管理员专属</span>
               </div>
               <div className="card-body">
-                <div className="setting-editor admin-create-editor">
-                  <label htmlFor="new-admin-username">新管理员用户名</label>
-                  <input
-                    id="new-admin-username"
-                    value={newAdminUsername}
-                    onChange={(event) => setNewAdminUsername(event.target.value)}
-                  />
-                  <label htmlFor="new-admin-initial-password">初始密码</label>
-                  <input
-                    id="new-admin-initial-password"
-                    type="password"
-                    minLength={5}
-                    autoComplete="new-password"
-                    value={newAdminPassword}
-                    onChange={(event) => setNewAdminPassword(event.target.value)}
-                  />
-                  <button
-                    className="button compact"
-                    disabled={
-                      newAdminUsername.trim().length < 3 || newAdminPassword.length < 5
-                    }
-                    onClick={createAdmin}
-                  >
-                    <Icon name="plus" />
-                    创建 ADMIN
-                  </button>
+                <div className="admin-create-panel">
+                  <div className="admin-create-title">
+                    <strong>创建管理员</strong>
+                    <span>新账号初始密码至少 5 位</span>
+                  </div>
+                  <div className="admin-create-editor">
+                    <div className="account-field">
+                      <label htmlFor="new-admin-username">用户名</label>
+                      <input
+                        id="new-admin-username"
+                        className="field"
+                        value={newAdminUsername}
+                        onChange={(event) => setNewAdminUsername(event.target.value)}
+                        placeholder="输入管理员用户名"
+                      />
+                    </div>
+                    <div className="account-field">
+                      <label htmlFor="new-admin-initial-password">初始密码</label>
+                      <input
+                        id="new-admin-initial-password"
+                        className="field"
+                        type="password"
+                        minLength={5}
+                        autoComplete="new-password"
+                        value={newAdminPassword}
+                        onChange={(event) => setNewAdminPassword(event.target.value)}
+                        placeholder="至少 5 位字符"
+                      />
+                    </div>
+                    <button
+                      className="button primary admin-create-submit"
+                      disabled={
+                        newAdminUsername.trim().length < 3 || newAdminPassword.length < 5
+                      }
+                      onClick={createAdmin}
+                    >
+                      <Icon name="plus" />
+                      创建管理员
+                    </button>
+                  </div>
+                </div>
+                <div className="admin-list-heading">
+                  <strong>管理员账号</strong>
+                  <span>{admins.length} 个账号</span>
                 </div>
                 <div className="admin-list">
                   {admins.map((admin) => (
                     <div className="admin-row" key={admin.id}>
-                      <div>
-                        <strong>{admin.username}</strong>
-                        <span>{admin.role}</span>
+                      <span className="admin-avatar">
+                        {admin.username.slice(0, 1).toUpperCase()}
+                      </span>
+                      <div className="admin-row-info">
+                        <strong title={admin.username}>{admin.username}</strong>
+                        <span>
+                          {admin.role === 'SUPER_ADMIN' ? '超级管理员' : '管理员'}
+                          {admin.id === user.id ? ' · 当前账号' : ''}
+                        </span>
                       </div>
                       {admin.role === 'ADMIN' ? (
                         <button
@@ -1978,15 +2610,23 @@ function SettingsView({ user }: { user: AdminUser }) {
                         >
                           重置密码
                         </button>
-                      ) : null}
+                      ) : (
+                        <span className="admin-owner-badge">所有者</span>
+                      )}
                     </div>
                   ))}
+                  {admins.length === 0 ? (
+                    <div className="admin-empty">暂无管理员账号</div>
+                  ) : null}
                 </div>
               </div>
             </section>
           ) : null}
         </div>
-        {accountMessage ? <div className="account-message">{accountMessage}</div> : null}
+        <ToastNotice
+          message={accountMessage?.message}
+          tone={accountMessage?.tone ?? 'info'}
+        />
       </div>
       {resetTarget ? (
         <Modal
@@ -2065,6 +2705,7 @@ function AdminLoginPage({ onLogin }: { onLogin: (user: AdminUser) => void }) {
   };
   return (
     <main className="login-page">
+      <ToastNotice message={error} />
       <form className="login-panel" onSubmit={submit}>
         <div className="login-brand">
           <span className="brand-mark">
@@ -2095,7 +2736,6 @@ function AdminLoginPage({ onLogin }: { onLogin: (user: AdminUser) => void }) {
             onChange={(event) => setPassword(event.target.value)}
           />
         </div>
-        {error ? <div className="form-error">{error}</div> : null}
         <button
           className="button primary login-submit"
           type="submit"
@@ -2108,130 +2748,13 @@ function AdminLoginPage({ onLogin }: { onLogin: (user: AdminUser) => void }) {
   );
 }
 
-function XhsLoginModal({
-  value,
-  loading,
-  error,
-  onReload,
-  onComplete,
-  onClose,
-}: {
-  value?: LoginQrcode;
-  loading: boolean;
-  error: string;
-  onReload: () => void;
-  onComplete: () => void;
-  onClose: () => void;
-}) {
-  const [status, setStatus] = useState('等待扫码');
-  const [loggedInUser, setLoggedInUser] = useState('');
-  useEffect(() => {
-    setLoggedInUser('');
-    setStatus('等待扫码');
-    if (value === undefined || error !== '') return;
-    if (value.alreadyLoggedIn) {
-      setLoggedInUser('小红书账号');
-      setStatus('登录成功');
-      onComplete();
-      return;
-    }
-    const expiresAt = Date.now() + value.expiresInSeconds * 1_000;
-    let active = true;
-    let timer: number | undefined;
-    const check = async () => {
-      if (Date.now() >= expiresAt) {
-        setStatus('二维码已过期，请刷新二维码；若已确认登录，刷新将重新核验登录状态');
-        return;
-      }
-      setStatus('正在检查登录状态，请在手机端完成确认…');
-      try {
-        const result = await api<{ loggedIn: boolean; username?: string }>(
-          '/api/v1/xiaohongshu/session/check',
-          { method: 'POST', body: '{}' },
-        );
-        if (!active) return;
-        if (result.loggedIn) {
-          setLoggedInUser(result.username ?? '小红书账号');
-          setStatus('登录成功');
-          onComplete();
-          active = false;
-        } else {
-          setStatus('等待扫码');
-        }
-      } catch (reason) {
-        if (active) setStatus(reason instanceof Error ? reason.message : '状态检查失败');
-      } finally {
-        if (active) timer = window.setTimeout(() => void check(), 3_000);
-      }
-    };
-    void check();
-    return () => {
-      active = false;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [error, onComplete, value]);
-  return (
-    <Modal
-      title="登录小红书账号"
-      onClose={onClose}
-      footer={
-        <>
-          <button className="button" onClick={onClose}>
-            关闭
-          </button>
-          {!loading && loggedInUser === '' ? (
-            <button className="button primary" onClick={onReload}>
-              <Icon name="retry" />
-              刷新二维码
-            </button>
-          ) : null}
-        </>
-      }
-    >
-      <div className="xhs-login-body">
-        {loading ? <div className="empty">正在获取登录二维码…</div> : null}
-        {error ? (
-          <div className="alert danger">
-            <Icon name="warning" />
-            <span>{error}</span>
-          </div>
-        ) : null}
-        {!loading && value?.qrCodeDataUrl && loggedInUser === '' ? (
-          <>
-            <img
-              className="xhs-qrcode"
-              src={value.qrCodeDataUrl}
-              alt="小红书登录二维码"
-            />
-            <strong>请使用小红书 App 扫码登录</strong>
-            <span className="muted small">
-              二维码约 {Math.ceil((value.expiresInSeconds ?? 240) / 60)}{' '}
-              分钟后失效，请在手机端完成确认。
-            </span>
-          </>
-        ) : null}
-        {!loading && (value?.alreadyLoggedIn || loggedInUser !== '') ? (
-          <div className="login-success">
-            <Icon name="check" />
-            <strong>{loggedInUser ? `${loggedInUser} 登录成功` : '当前已经登录'}</strong>
-          </div>
-        ) : null}
-        {!loading && !error ? <span className="status neutral">{status}</span> : null}
-      </div>
-    </Modal>
-  );
-}
-
 export default function ConsoleApp() {
   const [location, setLocation] = useState(viewFromLocation);
   const [theme, setTheme] = useTheme();
   const [currentUser, setCurrentUser] = useState<AdminUser | null>();
   const [overview, setOverview] = useState<ApiState>();
   const [showCreate, setShowCreate] = useState(false);
-  const [showXhsLogin, setShowXhsLogin] = useState(false);
-  const [loginQrcode, setLoginQrcode] = useState<LoginQrcode>();
-  const [loginQrcodeLoading, setLoginQrcodeLoading] = useState(false);
-  const [loginQrcodeError, setLoginQrcodeError] = useState('');
+  const [workflowsRefreshKey, setWorkflowsRefreshKey] = useState(0);
   useEffect(() => {
     const onPop = () => setLocation(viewFromLocation());
     window.addEventListener('popstate', onPop);
@@ -2253,25 +2776,6 @@ export default function ConsoleApp() {
   useEffect(() => {
     if (currentUser && location.view === 'overview') loadOverview();
   }, [currentUser, location.view, loadOverview]);
-  const loadLoginQrcode = useCallback(() => {
-    setLoginQrcodeLoading(true);
-    setLoginQrcodeError('');
-    setLoginQrcode(undefined);
-    void api<LoginQrcode>('/api/v1/xiaohongshu/session/login-qrcode', {
-      method: 'POST',
-      body: '{}',
-    })
-      .then(setLoginQrcode)
-      .catch((reason: unknown) =>
-        setLoginQrcodeError(reason instanceof Error ? reason.message : '二维码获取失败'),
-      )
-      .finally(() => setLoginQrcodeLoading(false));
-  }, []);
-  const openXhsLogin = useCallback(() => {
-    setShowXhsLogin(true);
-    loadLoginQrcode();
-  }, [loadLoginQrcode]);
-  const completeXhsLogin = useCallback(() => loadOverview(), [loadOverview]);
   const logout = useCallback(() => {
     void api('/api/v1/auth/logout', { method: 'POST', body: '{}' }).finally(() => {
       setCurrentUser(null);
@@ -2279,18 +2783,22 @@ export default function ConsoleApp() {
     });
   }, []);
   const create = (input: {
+    platform: Platform;
     topic: string;
     directionMode: string;
     publishMode: string;
     accountId: string;
+    researchMode: 'search' | 'library' | 'hybrid';
+    researchDocumentIds: string[];
   }) => {
     void api('/api/v1/runs', {
       method: 'POST',
       headers: { 'idempotency-key': crypto.randomUUID() },
-      body: JSON.stringify({ ...input, platform: 'xiaohongshu' }),
+      body: JSON.stringify(input),
     })
       .then(() => {
         setShowCreate(false);
+        setWorkflowsRefreshKey((key) => key + 1);
         navigate('workflows');
       })
       .catch(() => undefined);
@@ -2309,41 +2817,34 @@ export default function ConsoleApp() {
   else if (location.id !== undefined && location.view === 'drafts')
     content = <DraftEditorView id={location.id} onBack={() => navigate('drafts')} />;
   else if (location.view === 'overview')
-    content = (
-      <OverviewView data={overview} onRefresh={loadOverview} onLogin={openXhsLogin} />
-    );
+    content = <OverviewView data={overview} onRefresh={loadOverview} />;
   else if (location.view === 'workflows')
-    content = <WorkflowsView onOpen={(id) => navigate(`workflow/${id}`)} />;
+    content = (
+      <WorkflowsView
+        refreshKey={workflowsRefreshKey}
+        onOpen={(id) => navigate(`workflow/${id}`)}
+      />
+    );
   else if (location.view === 'drafts')
     content = <DraftsView onOpen={(id) => navigate(`draft/${id}`)} />;
   else if (location.view === 'research') content = <ResearchView />;
-  else if (location.view === 'publishes') content = <PublishesView />;
   else content = <SettingsView user={currentUser} />;
   return (
     <>
       <Shell
-        active={location.view}
+        active={showCreate ? 'workflows' : location.view}
         mode={theme}
         onTheme={setTheme}
         onCreate={() => setShowCreate(true)}
         user={currentUser}
         onLogout={logout}
       >
-        {content}
+        {showCreate ? (
+          <CreateRunModal onClose={() => setShowCreate(false)} onCreate={create} />
+        ) : (
+          content
+        )}
       </Shell>
-      {showCreate ? (
-        <CreateRunModal onClose={() => setShowCreate(false)} onCreate={create} />
-      ) : null}
-      {showXhsLogin ? (
-        <XhsLoginModal
-          value={loginQrcode}
-          loading={loginQrcodeLoading}
-          error={loginQrcodeError}
-          onReload={loadLoginQrcode}
-          onComplete={completeXhsLogin}
-          onClose={() => setShowXhsLogin(false)}
-        />
-      ) : null}
     </>
   );
 }
@@ -2354,101 +2855,450 @@ function CreateRunModal({
 }: {
   onClose: () => void;
   onCreate: (input: {
+    platform: Platform;
     topic: string;
     directionMode: string;
     publishMode: string;
     accountId: string;
+    researchMode: 'search' | 'library' | 'hybrid';
+    researchDocumentIds: string[];
   }) => void;
 }) {
+  type Folder = { id: string; name: string; parentId: string | null };
+  type Doc = { id: string; title: string; folderId: string | null };
+  type Library = { folders: Folder[]; documents: Doc[] };
+  type Node = { id: string; title: string; type: 'folder' | 'file'; children: Node[] };
   const [topic, setTopic] = useState('');
+  const [platform, setPlatform] = useState<Platform>(PLATFORM_OPTIONS[0]!.id);
   const [directionMode, setDirectionMode] = useState('manual');
-  const [publishMode, setPublishMode] = useState('review');
-  const [accountId, setAccountId] = useState('');
-  const [accounts, setAccounts] = useState<Array<{ id: string; alias: string }>>([]);
+  const [researchMode, setResearchMode] = useState<'search' | 'library' | 'hybrid'>(
+    'search',
+  );
+  const [library, setLibrary] = useState<Library>({ folders: [], documents: [] });
+  const [researchDocumentIds, setResearchDocumentIds] = useState<string[]>([]);
+  const [treeSearch, setTreeSearch] = useState('');
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   useEffect(() => {
-    void api<{ items: Array<{ id: string; alias: string }> }>(
-      '/api/v1/xiaohongshu/accounts',
-    )
-      .then((value) => {
-        setAccounts(value.items);
-        setAccountId(value.items[0]?.id ?? '');
+    void api<Library>('/api/v1/research-library')
+      .then((data) => {
+        setLibrary(data);
+        setExpandedFolders(
+          new Set(
+            data.folders
+              .filter((folder) => folder.parentId === null)
+              .map((folder) => folder.id),
+          ),
+        );
       })
       .catch(() => undefined);
   }, []);
-  return (
-    <Modal
-      title="新建小红书工作流"
-      onClose={onClose}
-      footer={
-        <>
-          <button className="button" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="button primary"
-            disabled={topic.trim() === '' || accountId === ''}
-            onClick={() => onCreate({ topic, directionMode, publishMode, accountId })}
-          >
-            <Icon name="play" />
-            创建并开始
-          </button>
-        </>
-      }
-    >
-      <div className="alert">
-        <Icon name="info" />
-        <span>
-          首期仅支持小红书；发布模式即使选择自动，也会受服务端强制人工批准策略保护。
-        </span>
-      </div>
-      <div className="form-grid" style={{ marginTop: 16 }}>
-        <div className="form-field full">
-          <label htmlFor="run-topic">内容主题</label>
+  const nodesByParent = new Map<string | null, Node[]>([[null, []]]);
+  for (const folder of library.folders) nodesByParent.set(folder.id, []);
+  for (const folder of library.folders) {
+    const parentNodes = nodesByParent.get(folder.parentId) ?? nodesByParent.get(null)!;
+    parentNodes.push({
+      id: folder.id,
+      title: folder.name,
+      type: 'folder',
+      children: nodesByParent.get(folder.id)!,
+    });
+  }
+  for (const doc of library.documents) {
+    (nodesByParent.get(doc.folderId) ?? nodesByParent.get(null)!).push({
+      id: doc.id,
+      title: doc.title,
+      type: 'file',
+      children: [],
+    });
+  }
+  const tree = nodesByParent.get(null) ?? [];
+  const allFileIds = library.documents.map((doc) => doc.id);
+  const descendants = (node: Node): string[] =>
+    node.type === 'file' ? [node.id] : node.children.flatMap(descendants);
+  const pathById = new Map<string, string>();
+  const indexPaths = (items: Node[], parentPath = '') => {
+    for (const node of items) {
+      const path = parentPath ? `${parentPath} / ${node.title}` : node.title;
+      pathById.set(node.id, node.type === 'file' ? parentPath || '全部资料' : path);
+      if (node.type === 'folder') indexPaths(node.children, path);
+    }
+  };
+  indexPaths(tree);
+  const fileDocs = library.documents.filter((doc) =>
+    researchDocumentIds.includes(doc.id),
+  );
+  const toggleSelection = (node: Node) => {
+    const ids = descendants(node);
+    const allSelected =
+      ids.length > 0 && ids.every((id) => researchDocumentIds.includes(id));
+    setResearchDocumentIds((current) =>
+      allSelected
+        ? current.filter((id) => !ids.includes(id))
+        : [...new Set([...current, ...ids])],
+    );
+  };
+  const matches = (node: Node, query: string): boolean =>
+    node.title.toLowerCase().includes(query) ||
+    (node.type === 'folder' && node.children.some((child) => matches(child, query)));
+  const renderNode = (node: Node, depth = 0): React.ReactNode => {
+    const query = treeSearch.trim().toLowerCase();
+    if (query && !matches(node, query)) return null;
+    const isFolder = node.type === 'folder';
+    const ids = isFolder ? descendants(node) : [node.id];
+    const checkedCount = ids.filter((id) => researchDocumentIds.includes(id)).length;
+    const checked = ids.length > 0 && checkedCount === ids.length;
+    const indeterminate = checkedCount > 0 && !checked;
+    const expanded = query !== '' || expandedFolders.has(node.id);
+    return (
+      <Fragment key={node.id}>
+        <div
+          className="workflow-tree-row"
+          role="treeitem"
+          aria-level={depth + 1}
+          aria-expanded={isFolder ? expanded : undefined}
+          style={{ paddingLeft: 10 + depth * 19 }}
+        >
+          {isFolder ? (
+            <button
+              className="workflow-tree-chevron"
+              aria-label={expanded ? `收起${node.title}` : `展开${node.title}`}
+              onClick={() =>
+                setExpandedFolders((current) => {
+                  const next = new Set(current);
+                  if (expanded) next.delete(node.id);
+                  else next.add(node.id);
+                  return next;
+                })
+              }
+            >
+              <Icon name={expanded ? 'chevron-down' : 'chevron-right'} />
+            </button>
+          ) : (
+            <span className="workflow-tree-chevron-spacer" />
+          )}
           <input
-            id="run-topic"
-            value={topic}
-            onChange={(event) => setTopic(event.target.value)}
-            placeholder="例如：PostgreSQL 17 升级注意事项"
+            type="checkbox"
+            checked={checked}
+            ref={(element) => {
+              if (element) element.indeterminate = indeterminate;
+            }}
+            onChange={() => toggleSelection(node)}
+            aria-label={`选择${node.title}`}
           />
+          <Icon name={isFolder ? 'folder' : 'file'} />
+          <span className="workflow-tree-label" title={node.title}>
+            {node.title}
+          </span>
+          {isFolder ? <span className="workflow-tree-count">{ids.length}</span> : null}
         </div>
-        <div className="form-field">
-          <label htmlFor="run-direction">方向选择</label>
-          <select
-            id="run-direction"
-            value={directionMode}
-            onChange={(event) => setDirectionMode(event.target.value)}
-          >
-            <option value="manual">人工选择</option>
-            <option value="auto">自动选择</option>
-          </select>
+        {isFolder && expanded
+          ? node.children.map((child) => renderNode(child, depth + 1))
+          : null}
+      </Fragment>
+    );
+  };
+  const publishMode = 'review';
+  const accountId = '00000000-0000-4000-8000-000000000001';
+  const noDocs = library.documents.length === 0;
+  const sourceSummary =
+    researchMode === 'search'
+      ? '联网检索'
+      : `已选择 ${researchDocumentIds.length} 篇研究资料${researchMode === 'hybrid' ? ' · 联网检索' : ''}`;
+  return (
+    <div className="workflow-create-page">
+      <div className="workflow-create-content">
+        <div className="workflow-prototype-breadcrumb">
+          内容工作台 <Icon name="chevron-right" /> 工作流 <Icon name="chevron-right" />{' '}
+          <strong>新建工作流</strong>
         </div>
-        <div className="form-field">
-          <label htmlFor="run-publish">发布模式</label>
-          <select
-            id="run-publish"
-            value={publishMode}
-            onChange={(event) => setPublishMode(event.target.value)}
-          >
-            <option value="review">人工审核</option>
-            <option value="auto">自动发布（受安全门禁）</option>
-          </select>
+        <div className="workflow-create-heading">
+          <div>
+            <h2>新建工作流</h2>
+            <p>配置内容主题与参考资料，创建后即可开始内容生产。</p>
+          </div>
+          <button className="button" onClick={onClose}>
+            返回
+          </button>
         </div>
-        <div className="form-field full">
-          <label htmlFor="run-account">小红书账号</label>
-          <select
-            id="run-account"
-            value={accountId}
-            onChange={(event) => setAccountId(event.target.value)}
-          >
-            <option value="">请选择账号</option>
-            {accounts.map((account) => (
-              <option key={account.id} value={account.id}>
-                {account.alias}
-              </option>
-            ))}
-          </select>
+        <div className="workflow-create-canvas">
+          <section className="workflow-create-section">
+            <div className="workflow-section-heading">
+              <span>01</span>
+              <strong>基础设置</strong>
+              <small>确定本次内容生产的主题与目标平台</small>
+            </div>
+            <label className="workflow-field-label" htmlFor="run-topic">
+              内容主题<span>*</span>
+            </label>
+            <input
+              className="workflow-topic-input"
+              id="run-topic"
+              maxLength={150}
+              value={topic}
+              onChange={(event) => setTopic(event.target.value)}
+              placeholder="例如：PostgreSQL 17 升级注意事项"
+              autoComplete="off"
+            />
+            {!topic.trim() ? (
+              <small className="workflow-field-hint">请输入本次内容生产的主题。</small>
+            ) : null}
+            <div className="workflow-platform-label">
+              发布平台<span>*</span>
+            </div>
+            <div className="workflow-platform-row">
+              {PLATFORM_OPTIONS.map((option) => (
+                <button
+                  className={`workflow-platform-selected ${platform === option.id ? 'active' : ''}`}
+                  key={option.id}
+                  type="button"
+                  aria-pressed={platform === option.id}
+                  onClick={() => setPlatform(option.id)}
+                >
+                  <span className="workflow-xhs-mark">{option.name.slice(0, 2)}</span>
+                  <span>
+                    <strong>{option.name}</strong>
+                    <small>{option.contentType}</small>
+                  </span>
+                  {platform === option.id ? (
+                    <span className="workflow-platform-check">✓</span>
+                  ) : null}
+                </button>
+              ))}
+              {PLATFORM_OPTIONS.length === 1 ? (
+                <button
+                  className="workflow-platform-add"
+                  type="button"
+                  onClick={() => window.alert('更多发布平台将陆续接入')}
+                >
+                  ＋ 更多平台即将接入
+                </button>
+              ) : null}
+            </div>
+            <div className="workflow-create-two-columns">
+              <label className="workflow-field-label">
+                方向选择
+                <select
+                  className="workflow-select"
+                  value={directionMode}
+                  onChange={(event) => setDirectionMode(event.target.value)}
+                >
+                  <option value="manual">人工选择</option>
+                  <option value="auto">自动推荐</option>
+                </select>
+                <small>
+                  {directionMode === 'manual'
+                    ? '根据研究资料生成内容方向，进入草稿箱后由你确认。'
+                    : '系统结合主题与资料自动推荐方向并继续生成。'}
+                </small>
+              </label>
+              <label className="workflow-field-label">
+                资料来源
+                <select
+                  className="workflow-select"
+                  value={researchMode}
+                  onChange={(event) =>
+                    setResearchMode(event.target.value as 'search' | 'library' | 'hybrid')
+                  }
+                >
+                  <option value="search">仅联网检索</option>
+                  <option value="library">资料库</option>
+                  <option value="hybrid">混合（资料库 + 联网检索）</option>
+                </select>
+                <small>
+                  {researchMode === 'library'
+                    ? '只使用你选中的研究资料作为参考。'
+                    : researchMode === 'hybrid'
+                      ? '优先参考选中资料，同时补充联网搜索结果。'
+                      : '根据主题进行联网检索，无需选择资料。'}
+                </small>
+              </label>
+            </div>
+          </section>
+          <section className="workflow-create-section workflow-library-section">
+            <div className="workflow-section-heading">
+              <span>02</span>
+              <strong>选择研究资料</strong>
+              <small>从资料库中选择文件夹或单篇资料</small>
+            </div>
+            {researchMode === 'search' ? (
+              <div className="workflow-source-hidden">
+                <Icon name="info" />
+                当前选择“仅联网检索”，无需选择研究资料。切换资料来源后可继续选择。
+              </div>
+            ) : (
+              <>
+                <div className="workflow-selection-intro">
+                  <strong>研究资料库</strong>
+                  <span>勾选文件夹可选中其下全部资料</span>
+                </div>
+                <div className="workflow-picker">
+                  <div className="workflow-picker-left">
+                    <div className="workflow-picker-header">
+                      <Icon name="folder" />
+                      <strong>全部资料</strong>
+                      <span>{library.documents.length} 篇</span>
+                      <button
+                        onClick={() =>
+                          setResearchDocumentIds(
+                            researchDocumentIds.length === allFileIds.length
+                              ? []
+                              : allFileIds,
+                          )
+                        }
+                      >
+                        {allFileIds.length > 0 &&
+                        researchDocumentIds.length === allFileIds.length
+                          ? '取消全选'
+                          : '全选'}
+                      </button>
+                    </div>
+                    <div className="workflow-tree-search">
+                      <input
+                        aria-label="搜索文件夹或资料名称"
+                        value={treeSearch}
+                        onChange={(event) => setTreeSearch(event.target.value)}
+                        placeholder="搜索文件夹或资料名称"
+                      />
+                      <button disabled={!treeSearch} onClick={() => setTreeSearch('')}>
+                        ×
+                      </button>
+                    </div>
+                    <div className="workflow-tree-tools">
+                      <span>资料库 / 全部资料</span>
+                      <button
+                        disabled={library.folders.length === 0}
+                        onClick={() =>
+                          setExpandedFolders(
+                            library.folders.length > 0 &&
+                              library.folders.every((folder) =>
+                                expandedFolders.has(folder.id),
+                              )
+                              ? new Set()
+                              : new Set(library.folders.map((folder) => folder.id)),
+                          )
+                        }
+                      >
+                        {library.folders.length > 0 &&
+                        library.folders.every((folder) => expandedFolders.has(folder.id))
+                          ? '全部收起'
+                          : '全部展开'}
+                      </button>
+                    </div>
+                    <div
+                      className="workflow-tree"
+                      role="tree"
+                      aria-label="研究资料库文件树"
+                    >
+                      {treeSearch.trim() &&
+                      !tree.some((node) =>
+                        matches(node, treeSearch.trim().toLowerCase()),
+                      ) ? (
+                        <div className="workflow-tree-empty">没有找到匹配的资料</div>
+                      ) : (
+                        tree.map((node) => renderNode(node))
+                      )}
+                    </div>
+                  </div>
+                  <div className="workflow-picker-right">
+                    <div className="workflow-picker-header">
+                      <Icon name="draft" />
+                      <strong>已选择</strong>
+                      <span>{fileDocs.length} 篇</span>
+                      <button
+                        disabled={!fileDocs.length}
+                        onClick={() => setResearchDocumentIds([])}
+                      >
+                        清空选择
+                      </button>
+                    </div>
+                    <p className="workflow-selected-note">
+                      {fileDocs.length
+                        ? '所选资料将用于本次内容生成'
+                        : '还没有选择任何资料'}
+                    </p>
+                    <div className="workflow-selected-list">
+                      {fileDocs.length ? (
+                        fileDocs.map((doc) => (
+                          <div className="workflow-selected-item" key={doc.id}>
+                            <span className="workflow-file-mark">MD</span>
+                            <span>
+                              <strong>{doc.title}</strong>
+                              <small>{pathById.get(doc.id) ?? '全部资料'}</small>
+                            </span>
+                            <button
+                              aria-label={`移除${doc.title}`}
+                              onClick={() =>
+                                setResearchDocumentIds((current) =>
+                                  current.filter((id) => id !== doc.id),
+                                )
+                              }
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="workflow-selected-empty">
+                          <span>▧</span>
+                          <strong>尚未选择资料</strong>
+                          <small>从左侧勾选文件夹或资料</small>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="workflow-optional-note">
+                  <Icon name="info" />
+                  仅勾选资料会作为生成参考；未勾选的资料不会加入本次工作流。
+                </div>
+                {noDocs ? (
+                  <div className="workflow-library-empty">
+                    资料库暂无内容，请先到“研究资料”创建 Markdown 资料。
+                  </div>
+                ) : null}
+              </>
+            )}
+          </section>
         </div>
       </div>
-    </Modal>
+      <footer className="workflow-create-page-footer">
+        <div className="workflow-create-footer">
+          <div className="workflow-create-summary">
+            <Icon name="draft" />
+            <span>
+              {PLATFORM_OPTIONS.find((option) => option.id === platform)?.name} ·{' '}
+              {sourceSummary}
+            </span>
+          </div>
+          <div className="workflow-create-actions">
+            <button className="button" onClick={onClose}>
+              取消
+            </button>
+            <button
+              className="button primary"
+              disabled={
+                topic.trim() === '' ||
+                (researchMode !== 'search' && researchDocumentIds.length === 0)
+              }
+              onClick={() =>
+                onCreate({
+                  platform,
+                  topic,
+                  directionMode,
+                  publishMode,
+                  accountId,
+                  researchMode,
+                  researchDocumentIds:
+                    researchMode === 'search' ? [] : researchDocumentIds,
+                })
+              }
+            >
+              <Icon name="play" />
+              创建并开始
+            </button>
+          </div>
+        </div>
+      </footer>
+    </div>
   );
 }

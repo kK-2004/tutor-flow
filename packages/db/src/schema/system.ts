@@ -53,7 +53,7 @@ export const adminSessions = sqliteTable(
   ],
 );
 
-/** 系统设置：非敏感键值配置（质量门槛、搜索预算、默认审核模式等） */
+/** 系统设置：保存非敏感配置与加密后的模型凭据 */
 export const systemSettings = sqliteTable('system_setting', {
   /** 设置键（如 quality_thresholds、search_budget） */
   key: text().primaryKey(),

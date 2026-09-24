@@ -10,6 +10,7 @@ import {
   requireRun,
   setRunSelectedDirection,
   sourceDocuments,
+  upsertSetting,
 } from '@tutor-flow/db';
 import type { DbClient } from '@tutor-flow/db';
 import type { StepHandler } from '@tutor-flow/workflow';
@@ -227,6 +228,45 @@ describe('小红书衍生稿适配（5.2）', () => {
     ).toHaveLength(0);
   });
 
+  it('下一次生成使用刚保存的提示词，并记录实际提示词版本', async () => {
+    const { run } = await seedResearchDone();
+    llm.on(
+      (request) => request.task === 'canonical_article',
+      () => canonicalScript,
+    );
+    llm.on(
+      (request) => request.task === 'xhs_adapt',
+      () => adaptScript,
+    );
+    await generateCanonical({
+      data: { runId: run.id, stepType: 'GENERATE_CANONICAL', attemptNo: 1 },
+      run,
+      attempt: {},
+    } as never);
+    const saved = await upsertSetting(db.db, {
+      key: 'xiaohongshu_prompt',
+      value: {
+        systemPrompt:
+          '为数据库管理员写可收藏的小红书笔记。严格依据已核验事实。标题点明收益，正文清晰具体，不编造任何事实。',
+      },
+      updatedBy: 'test',
+    });
+    await adapt({
+      data: { runId: run.id, stepType: 'ADAPT_XIAOHONGSHU', attemptNo: 1 },
+      run,
+      attempt: {},
+    } as never);
+    const call = llm.calls.filter((request) => request.task === 'xhs_adapt').at(-1);
+    expect(call?.systemPrompt).toContain('数据库管理员');
+    expect(call?.systemPrompt).toContain('仅输出一个合法 JSON 对象');
+    const artifact = (await db.db.select().from(contentArtifacts)).find(
+      (item) => item.kind === 'XIAOHONGSHU',
+    );
+    expect((artifact?.generation as { promptVersion: string }).promptVersion).toMatch(
+      new RegExp(`^xhs-adapt@${saved.version}-`),
+    );
+  });
+
   it('衍生稿未引用任何事实时拒绝进入发布校验（无来源事实门槛）', async () => {
     const { run } = await seedResearchDone();
     llm.on(
@@ -335,7 +375,7 @@ describe('内容审核门槛（5.3）', () => {
     ).rejects.toThrow(/手机号/);
   });
 
-  it('缺少媒体（封面）时审核失败', async () => {
+  it('纯文字内容无需封面即可通过审核', async () => {
     const { run, claimId } = await seedResearchDone();
     await seedValidXhs(run, claimId, { media: [] });
     await expect(
@@ -344,7 +384,7 @@ describe('内容审核门槛（5.3）', () => {
         run,
         attempt: {},
       } as never),
-    ).rejects.toThrow(/媒体/);
+    ).resolves.toMatchObject({ outputRef: expect.any(String) });
   });
 });
 

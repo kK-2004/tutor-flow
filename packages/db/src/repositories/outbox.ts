@@ -4,7 +4,7 @@
  * 业务事务提交后才能读取待分发记录；队列投递在事务外进行。
  * 崩溃时记录保持未分发，至少一次投递，发件箱任务 ID 和消费端负责幂等。
  */
-import { and, asc, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, inArray, isNull, lt, notLike, sql } from 'drizzle-orm';
 
 import { redactDeep } from '../lib/redact.js';
 import type { DbExecutor } from '../lib/tx.js';
@@ -50,6 +50,8 @@ export async function claimPendingOutbox(
       and(
         isNull(outboxRecords.dispatchedAt),
         lt(outboxRecords.attempts, options.maxAttempts ?? 20),
+        // 历史发布记录留在库中供人工核对，不再投递至已停用的发布队列。
+        notLike(outboxRecords.eventName, 'publish.%'),
       ),
     )
     .orderBy(asc(outboxRecords.id))

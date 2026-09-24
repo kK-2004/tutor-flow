@@ -9,6 +9,7 @@ out/
 .env
 .env.local
 .env.*.local
+*.llm-secrets-key
 
 # 小红书 MCP 持久化登录态与临时图片
 /mcp/xhs/data/

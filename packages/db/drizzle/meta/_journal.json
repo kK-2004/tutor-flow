@@ -22,6 +22,27 @@
       "when": 1790144334059,
       "tag": "0002_steep_squadron_supreme",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1790180258871,
+      "tag": "0003_magical_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1790225661329,
+      "tag": "0004_silent_puppet_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1790225759007,
+      "tag": "0005_conscious_caretaker",
+      "breakpoints": true
     }
   ]
 }

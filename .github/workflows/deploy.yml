@@ -44,7 +44,6 @@ jobs:
         env:
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-          XHS_MCP_UPSTREAM_IMAGE: ${{ secrets.XHS_MCP_IMAGE_REPOSITORY || 'xpzouying/xiaohongshu-mcp' }}
         run: |
           set -euo pipefail
           : "${ACR_REGISTRY:?ACR_REGISTRY 不能为空}"
@@ -65,15 +64,9 @@ jobs:
           docker push "${ACR_IMAGE}:${BUILD_TAG}"
           docker push "${ACR_IMAGE}:${ROLLING_TAG}"
 
-          MCP_ACR_IMAGE="${ACR_IMAGE}:prod-xiaohongshu-mcp"
-          echo "Mirroring ${XHS_MCP_UPSTREAM_IMAGE} to ${MCP_ACR_IMAGE}"
-          docker pull "$XHS_MCP_UPSTREAM_IMAGE"
-          docker tag "$XHS_MCP_UPSTREAM_IMAGE" "$MCP_ACR_IMAGE"
-          docker push "$MCP_ACR_IMAGE"
 
           printf 'ACR_IMAGE=%s\n' "$ACR_IMAGE" >> "$GITHUB_ENV"
           printf 'BUILD_TAG=%s\n' "$BUILD_TAG" >> "$GITHUB_ENV"
-          printf 'XHS_MCP_IMAGE_REPOSITORY=%s\n' "$MCP_ACR_IMAGE" >> "$GITHUB_ENV"
 
       - name: 生成配置并部署到服务器
         env:
@@ -90,7 +83,6 @@ jobs:
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           CONTENT_CENTER_URL: https://file.ksite.xin
           KFILE_APP_TOKEN: ${{ secrets.KFILE_APP_TOKEN }}
-          XHS_MCP_ACCOUNT_ID: ${{ secrets.XHS_MCP_ACCOUNT_ID }}
           TUTOR_FLOW_BIND_ADDRESS: ${{ secrets.TUTOR_FLOW_BIND_ADDRESS }}
           API_PUBLISHED_PORT: ${{ secrets.API_PUBLISHED_PORT }}
           CONSOLE_PORT: ${{ secrets.CONSOLE_PORT }}
@@ -121,8 +113,6 @@ jobs:
 
           SSH_PORT="${SSH_PORT:-22}"
           REDIS_URL="${REDIS_URL:-redis://redis:6379}"
-          XHS_MCP_ACCOUNT_ID="${XHS_MCP_ACCOUNT_ID:-00000000-0000-4000-8000-000000000001}"
-          : "${XHS_MCP_IMAGE_REPOSITORY:?missing mirrored MCP image reference}"
           TUTOR_FLOW_BIND_ADDRESS="${TUTOR_FLOW_BIND_ADDRESS:-127.0.0.1}"
           API_PUBLISHED_PORT="${API_PUBLISHED_PORT:-4000}"
           CONSOLE_PORT="${CONSOLE_PORT:-8003}"
@@ -141,8 +131,6 @@ jobs:
           [[ "$PULL_REGISTRY" =~ ^[A-Za-z0-9.-]+$ ]] || { echo 'ACR_REGISTRY 格式不正确'; exit 1; }
           [[ "$ACR_IMAGE_PATH" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo 'ACR_IMAGE_PATH 格式不正确'; exit 1; }
           [[ "$ACR_USERNAME" =~ ^[A-Za-z0-9._@-]+$ ]] || { echo 'ACR_USERNAME 格式不正确'; exit 1; }
-          [[ "$XHS_MCP_IMAGE_REPOSITORY" =~ ^[A-Za-z0-9./:_-]+$ ]] || { echo 'XHS_MCP_IMAGE_REPOSITORY 格式不正确'; exit 1; }
-
           for value in \
             "$APP_IMAGE" \
             "$REDIS_URL" \
@@ -151,8 +139,6 @@ jobs:
             "$BRAVE_API_KEY" \
             "$CONTENT_CENTER_URL" \
             "$KFILE_APP_TOKEN" \
-            "$XHS_MCP_ACCOUNT_ID" \
-            "$XHS_MCP_IMAGE_REPOSITORY" \
             "$TUTOR_FLOW_BIND_ADDRESS" \
             "$API_PUBLISHED_PORT" \
             "$CONSOLE_PORT" \
@@ -171,8 +157,6 @@ jobs:
             printf "BRAVE_API_KEY='%s'\n" "$BRAVE_API_KEY"
             printf "CONTENT_CENTER_URL='%s'\n" "$CONTENT_CENTER_URL"
             printf "KFILE_APP_TOKEN='%s'\n" "$KFILE_APP_TOKEN"
-            printf "XHS_MCP_ACCOUNT_ID='%s'\n" "$XHS_MCP_ACCOUNT_ID"
-            printf "XHS_MCP_IMAGE_REPOSITORY='%s'\n" "$XHS_MCP_IMAGE_REPOSITORY"
             printf "TUTOR_FLOW_BIND_ADDRESS='%s'\n" "$TUTOR_FLOW_BIND_ADDRESS"
             printf "API_PUBLISHED_PORT='%s'\n" "$API_PUBLISHED_PORT"
             printf "CONSOLE_PORT='%s'\n" "$CONSOLE_PORT"
@@ -207,7 +191,7 @@ jobs:
             -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
             "${SSH_USER}@${SSH_HOST}" \
-            "DEPLOY_PATH='$DEPLOY_PATH' PULL_REGISTRY='$PULL_REGISTRY' PULL_IMAGE='$PULL_IMAGE' BUILD_TAG='$BUILD_TAG' APP_IMAGE='$APP_IMAGE' XHS_MCP_IMAGE_REPOSITORY='$XHS_MCP_IMAGE_REPOSITORY' IMAGE_NAME='$IMAGE_NAME' KEEP_VERSIONS='$KEEP_VERSIONS' bash -s" <<'REMOTE'
+            "DEPLOY_PATH='$DEPLOY_PATH' PULL_REGISTRY='$PULL_REGISTRY' PULL_IMAGE='$PULL_IMAGE' BUILD_TAG='$BUILD_TAG' APP_IMAGE='$APP_IMAGE' IMAGE_NAME='$IMAGE_NAME' KEEP_VERSIONS='$KEEP_VERSIONS' bash -s" <<'REMOTE'
           set -euo pipefail
           trap 'docker logout "$PULL_REGISTRY" >/dev/null 2>&1 || true' EXIT
 
@@ -218,7 +202,6 @@ jobs:
           docker tag "${PULL_IMAGE}:${BUILD_TAG}" "$APP_IMAGE"
           docker tag "${PULL_IMAGE}:${BUILD_TAG}" "${IMAGE_NAME}:latest"
           docker image rm "${PULL_IMAGE}:${BUILD_TAG}" >/dev/null 2>&1 || true
-          docker pull "$XHS_MCP_IMAGE_REPOSITORY"
 
           docker compose -f docker-compose.yml --env-file .env \
             up -d --no-build --remove-orphans --wait --wait-timeout 180

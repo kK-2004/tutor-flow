@@ -1,9 +1,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { platformAccounts } from '@tutor-flow/db';
+import {
+  contentArtifacts,
+  platformAccounts,
+  queryPlans,
+  sourceDocuments,
+  workflowRuns,
+} from '@tutor-flow/db';
 import type { DbClient } from '@tutor-flow/db';
 import type { ApiEnv } from '@tutor-flow/config/server';
 import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
 
 import { buildApp } from '../../apps/api/src/app.js';
 import {
@@ -48,6 +55,12 @@ function api() {
           ...extraHeaders,
         },
         payload,
+      }),
+    delete: (url: string) =>
+      app.inject({
+        method: 'DELETE',
+        url,
+        headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
       }),
   };
 }
@@ -206,15 +219,57 @@ describe('列表、详情与守卫', () => {
     expect(body.items[0]?.topic).toBe(validBody.topic);
   });
 
-  it('详情包含步骤与事件，未知 id 返回 404', async () => {
+  it('详情包含任务主题和各阶段已保存的输出，未知 id 返回 404', async () => {
     const created = await api().post('/api/v1/runs', validBody);
     const runId = (created.json() as { runId: string }).runId;
 
+    await db.db.insert(queryPlans).values({
+      runId,
+      queries: [{ query: '测试检索词', language: 'zh', intent: 'BASIC_UNDERSTANDING' }],
+      model: 'test-model',
+      promptVersion: 'query-planning@1',
+      usage: { promptTokens: 12, completionTokens: 8 },
+    });
+    await db.db.insert(sourceDocuments).values({
+      runId,
+      canonicalUrl: 'https://example.com/source',
+      urlHash: 'source-hash',
+      title: '测试来源',
+      domain: 'example.com',
+      language: 'zh',
+    });
+    await db.db.insert(contentArtifacts).values({
+      runId,
+      kind: 'CANONICAL',
+      version: 1,
+      title: '测试初稿',
+      body: '完整正文',
+      tags: [],
+      mediaObjectKeys: [],
+      claimUsages: [],
+    });
+
     const detail = await api().get(`/api/v1/runs/${runId}`);
     expect(detail.statusCode).toBe(200);
-    const body = detail.json() as { steps: unknown[]; events: unknown[] };
+    const body = detail.json() as {
+      topic: string;
+      steps: unknown[];
+      events: unknown[];
+      outputs: {
+        queryPlans: Array<{ queries: Array<{ query: string }> }>;
+        sources: Array<{ title: string }>;
+        artifacts: Array<{ title: string; body: string }>;
+      };
+    };
+    expect(body.topic).toBe(validBody.topic);
     expect(Array.isArray(body.steps)).toBe(true);
     expect(body.events.length).toBeGreaterThan(0);
+    expect(body.outputs.queryPlans[0]?.queries[0]?.query).toBe('测试检索词');
+    expect(body.outputs.sources[0]?.title).toBe('测试来源');
+    expect(body.outputs.artifacts[0]).toMatchObject({
+      title: '测试初稿',
+      body: '完整正文',
+    });
 
     const missing = await api().get('/api/v1/runs/00000000-0000-0000-0000-00000000dead');
     expect(missing.statusCode).toBe(404);
@@ -249,6 +304,36 @@ describe('列表、详情与守卫', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json() as { status: string };
     expect(body.status).toBe('CANCELLED');
+  });
+});
+
+describe('工作流删除', () => {
+  it('终态工作流从列表移除并保留历史记录', async () => {
+    const created = await api().post('/api/v1/runs', validBody);
+    const runId = (created.json() as { runId: string }).runId;
+    await db.db
+      .update(workflowRuns)
+      .set({ status: 'SUCCEEDED' })
+      .where(eq(workflowRuns.id, runId));
+
+    const deleted = await api().delete(`/api/v1/runs/${runId}`);
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toMatchObject({ runId, deleted: true });
+    expect((await api().get(`/api/v1/runs/${runId}`)).statusCode).toBe(404);
+    expect((await api().get('/api/v1/runs')).json()).toMatchObject({ total: 0 });
+    const [archived] = await db.db
+      .select()
+      .from(workflowRuns)
+      .where(eq(workflowRuns.id, runId));
+    expect(archived?.deletedAt).toBeInstanceOf(Date);
+  });
+
+  it('运行中的工作流不能删除', async () => {
+    const created = await api().post('/api/v1/runs', validBody);
+    const runId = (created.json() as { runId: string }).runId;
+    const deleted = await api().delete(`/api/v1/runs/${runId}`);
+    expect(deleted.statusCode).toBe(409);
+    expect((await api().get(`/api/v1/runs/${runId}`)).statusCode).toBe(200);
   });
 });
 

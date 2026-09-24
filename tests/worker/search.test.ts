@@ -7,7 +7,7 @@ import {
   FakeSearchGateway,
   GatewayError,
 } from '@tutor-flow/integrations';
-import type { StepHandler } from '@tutor-flow/workflow';
+import { StepFailure, type StepHandler } from '@tutor-flow/workflow';
 
 import {
   createQueryPlanningHandler,
@@ -133,6 +133,28 @@ describe('Brave Search 适配器', () => {
 });
 
 describe('搜索步骤', () => {
+  it('缺少搜索密钥时保留可操作的配置错误', async () => {
+    const run = await seedPlannedRun('未配置密钥测试');
+    const unconfigured = createSearchHandler({
+      db,
+      search: {
+        async search() {
+          throw new StepFailure('VALIDATION', '请在 .env 中配置 BRAVE_API_KEY');
+        },
+      },
+    });
+    await expect(
+      unconfigured({
+        data: { runId: run.id, stepType: 'SEARCH' as const, attemptNo: 1 },
+        run,
+        attempt: {},
+      } as never),
+    ).rejects.toMatchObject({
+      category: 'VALIDATION',
+      message: '请在 .env 中配置 BRAVE_API_KEY',
+    });
+  });
+
   it('部分失败：成功查询照常落库，失败查询记入部分失败', async () => {
     const run = await seedPlannedRun('部分失败测试');
     fakeSearch.on(

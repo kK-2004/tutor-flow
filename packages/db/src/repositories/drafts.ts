@@ -4,9 +4,11 @@
  * 修订模型：每次保存插入新 revision 行；并发保存以最新修订号判定冲突。
  * 批准：单事务内重校验最新修订并创建发布任务，唯一约束保证最多一个。
  */
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { DraftMedia } from '@tutor-flow/domain';
 
+import { appendWorkflowEvent } from './events.js';
+import { getRunWithJob, transitionRunStatus } from './runs.js';
 import { NotFoundError, RevisionConflictError, StateGuardError } from '../lib/errors.js';
 import type { Db, DbExecutor, DbTx } from '../lib/tx.js';
 import {
@@ -37,7 +39,13 @@ export async function listDrafts(
     .from(draftRevisions)
     .innerJoin(workflowRuns, eq(draftRevisions.runId, workflowRuns.id))
     .innerJoin(contentJobs, eq(workflowRuns.contentJobId, contentJobs.id))
-    .where(eq(draftRevisions.status, status as never))
+    .where(
+      and(
+        eq(draftRevisions.status, status as never),
+        isNull(draftRevisions.deletedAt),
+        isNull(workflowRuns.deletedAt),
+      ),
+    )
     .orderBy(desc(draftRevisions.updatedAt));
   const latestByRun = new Map<string, (typeof rows)[number]>();
   for (const row of rows) {
@@ -116,13 +124,62 @@ export async function getLatestDraftRevision(
   db: DbExecutor,
   runId: string,
 ): Promise<DraftRevisionRow | null> {
+  const [run] = await db
+    .select({ id: workflowRuns.id })
+    .from(workflowRuns)
+    .where(and(eq(workflowRuns.id, runId), isNull(workflowRuns.deletedAt)))
+    .limit(1);
+  if (run === undefined) {
+    return null;
+  }
   const rows = await db
     .select()
     .from(draftRevisions)
-    .where(eq(draftRevisions.runId, runId))
+    .where(and(eq(draftRevisions.runId, runId), isNull(draftRevisions.deletedAt)))
     .orderBy(desc(draftRevisions.revision))
     .limit(1);
   return rows[0] ?? null;
+}
+
+/** 将草稿修订链从草稿箱移除；待审核工作流随之取消，历史记录继续保留。 */
+export async function softDeleteDraftRevisions(
+  db: Db,
+  runId: string,
+): Promise<{ revision: number; status: string }> {
+  return db.transaction(async (tx) => {
+    const run = await getRunWithJob(tx, runId);
+    if (run === null) {
+      throw new NotFoundError(`运行任务不存在：${runId}`);
+    }
+    const latest = await getLatestDraftRevision(tx, runId);
+    if (latest === null) {
+      throw new NotFoundError(`草稿不存在：run=${runId}`);
+    }
+    if (
+      ![
+        'WAITING_DIRECTION',
+        'NEEDS_REVIEW',
+        'NEEDS_HUMAN',
+        'SUCCEEDED',
+        'FAILED',
+        'CANCELLED',
+      ].includes(run.run.status)
+    ) {
+      throw new StateGuardError('关联工作流正在执行或发布，暂时不能删除草稿');
+    }
+    if (run.run.status === 'NEEDS_REVIEW') {
+      await transitionRunStatus(tx, runId, 'CANCELLED', {
+        expectedVersion: run.run.version,
+      });
+    }
+    const now = new Date();
+    await tx
+      .update(draftRevisions)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(and(eq(draftRevisions.runId, runId), isNull(draftRevisions.deletedAt)));
+    await appendWorkflowEvent(tx, runId, 'draft.deleted', { revision: latest.revision });
+    return { revision: latest.revision, status: latest.status };
+  });
 }
 
 /** 保存新修订：expectedRevision 不等于最新修订号时抛修订冲突 */
@@ -272,6 +329,44 @@ export async function approveDraft(
       },
     });
     return { draft: approvedRow, publishJob: job, created: true };
+  });
+}
+
+/** 内容模式批准：原子完成草稿与运行，不创建任何发布任务。 */
+export async function approveContentDraft(
+  db: Db,
+  input: { runId: string; expectedRevision: number; approvedBy: string },
+) {
+  return db.transaction(async (tx) => {
+    const latest = await requireLatest(tx, input.runId);
+    if (latest.revision !== input.expectedRevision)
+      throw new RevisionConflictError(latest.revision);
+    if (latest.status === 'APPROVED') return latest;
+    if (latest.status !== 'PENDING_REVIEW')
+      throw new StateGuardError('仅待审核草稿可以批准');
+    const run = (
+      await tx.select().from(workflowRuns).where(eq(workflowRuns.id, input.runId))
+    )[0];
+    if (run?.status !== 'NEEDS_REVIEW')
+      throw new StateGuardError('任务当前不在草稿审核阶段');
+    const [draft] = await tx
+      .update(draftRevisions)
+      .set({
+        status: 'APPROVED',
+        approvedBy: input.approvedBy,
+        approvedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(draftRevisions.id, latest.id))
+      .returning();
+    await tx
+      .update(workflowRuns)
+      .set({ status: 'SUCCEEDED', updatedAt: new Date() })
+      .where(eq(workflowRuns.id, input.runId));
+    await appendWorkflowEvent(tx, input.runId, 'draft.approved', {
+      revision: latest.revision,
+    });
+    return draft!;
   });
 }
 

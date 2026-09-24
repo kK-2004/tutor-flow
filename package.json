@@ -23,7 +23,8 @@
     "dev:api": "pnpm --filter @tutor-flow/api dev",
     "dev:worker": "pnpm --filter @tutor-flow/worker dev",
     "db:migrate": "pnpm --filter @tutor-flow/db... build && pnpm --filter @tutor-flow/db migrate",
-    "db:generate": "pnpm --filter @tutor-flow/db generate"
+    "db:generate": "pnpm --filter @tutor-flow/db generate",
+    "check:db-migrations": "node scripts/check-db-migrations.mjs"
   },
   "devDependencies": {
     "@libsql/client": "^0.18.0",

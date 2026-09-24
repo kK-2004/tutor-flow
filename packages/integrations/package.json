@@ -20,8 +20,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/client": "2.0.0",
-    "@tutor-flow/domain": "workspace:*"
+    "@ai-sdk/openai": "^3.0.116",
+    "@ai-sdk/openai-compatible": "^3.0.54",
+    "@tutor-flow/domain": "workspace:*",
+    "ai": "^7.0.112",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",

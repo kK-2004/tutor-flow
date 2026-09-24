@@ -40,6 +40,24 @@ const now = () =>
     .notNull()
     .$defaultFn(() => new Date());
 
+/** 用户维护的 Markdown 研究资料目录。 */
+export const researchFolders = sqliteTable('research_folder', {
+  id: uuidPk(),
+  name: text().notNull(),
+  parentId: text(),
+  createdAt: now(),
+});
+
+/** 用户维护的 Markdown 研究资料。 */
+export const researchDocuments = sqliteTable('research_document', {
+  id: uuidPk(),
+  folderId: text().references(() => researchFolders.id, { onDelete: 'set null' }),
+  title: text().notNull(),
+  markdown: text().notNull(),
+  createdAt: now(),
+  updatedAt: now(),
+});
+
 // ---------- 枚举列 ----------
 
 /** 来源类型列 */

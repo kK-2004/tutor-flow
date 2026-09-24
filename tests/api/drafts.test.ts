@@ -60,6 +60,12 @@ function api() {
         },
         payload,
       }),
+    delete: (url: string) =>
+      app.inject({
+        method: 'DELETE',
+        url,
+        headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
+      }),
   };
 }
 
@@ -121,7 +127,7 @@ async function seedDraft(body = VALID_BODY, media: string[] = ['media/cover.png'
     .returning();
   await db.db
     .insert(workflowRuns)
-    .values({ id: RUN_ID, contentJobId: job?.id as string });
+    .values({ id: RUN_ID, contentJobId: job?.id as string, status: 'NEEDS_REVIEW' });
   const [source] = await db.db
     .insert(sourceDocuments)
     .values({
@@ -189,6 +195,55 @@ describe('草稿列表与详情', () => {
       '/api/v1/drafts/10000000-0000-4000-8000-00000000dead',
     );
     expect(missing.statusCode).toBe(404);
+  });
+});
+
+describe('草稿删除', () => {
+  it('空 JSON 请求返回 400 且不删除草稿', async () => {
+    await seedDraft();
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/drafts/${RUN_ID}`,
+      headers: {
+        authorization: `Bearer ${OPERATOR_TOKEN}`,
+        'content-type': 'application/json',
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'FST_ERR_CTP_EMPTY_JSON_BODY' });
+    expect((await api().get(`/api/v1/drafts/${RUN_ID}`)).statusCode).toBe(200);
+  });
+
+  it('无效 JSON 请求返回 400', async () => {
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/drafts/${RUN_ID}`,
+      headers: {
+        authorization: `Bearer ${OPERATOR_TOKEN}`,
+        'content-type': 'application/json',
+      },
+      payload: '{',
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'FST_ERR_CTP_INVALID_JSON_BODY' });
+  });
+
+  it('从草稿箱移除草稿并取消待审核工作流，历史修订保留', async () => {
+    await seedDraft();
+    const deleted = await api().delete(`/api/v1/drafts/${RUN_ID}`);
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toMatchObject({ runId: RUN_ID, deleted: true });
+    expect((await api().get(`/api/v1/drafts/${RUN_ID}`)).statusCode).toBe(404);
+    expect(
+      (await api().get('/api/v1/drafts?status=PENDING_REVIEW')).json(),
+    ).toMatchObject({
+      total: 0,
+      items: [],
+    });
+    const [revision] = await db.db.select().from(draftRevisions);
+    const [run] = await db.db.select().from(workflowRuns);
+    expect(revision?.deletedAt).toBeInstanceOf(Date);
+    expect(run?.status).toBe('CANCELLED');
   });
 });
 
@@ -278,30 +333,23 @@ describe('生效内容预览', () => {
 });
 
 describe('草稿批准（事务性幂等）', () => {
-  it('批准通过校验并创建发布任务；重复批准返回原任务', async () => {
+  it('审核草稿后完成内容任务，重复审核保持幂等且不创建发布任务', async () => {
     await seedDraft();
     const first = await api().post(`/api/v1/drafts/${RUN_ID}/approve`, {
       expectedRevision: 1,
     });
     expect(first.statusCode).toBe(200);
-    const body = first.json() as {
-      publishJobId: string;
-      created: boolean;
-      publishJobStatus: string;
-    };
-    expect(body.created).toBe(true);
-    expect(body.publishJobStatus).toBe('QUEUED');
-
+    expect(first.json()).toMatchObject({
+      runId: RUN_ID,
+      revision: 1,
+      status: 'APPROVED',
+    });
     const second = await api().post(`/api/v1/drafts/${RUN_ID}/approve`, {
       expectedRevision: 1,
     });
     expect(second.statusCode).toBe(200);
-    const secondBody = second.json() as { publishJobId: string; created: boolean };
-    expect(secondBody.created).toBe(false);
-    expect(secondBody.publishJobId).toBe(body.publishJobId);
-
-    const jobs = await db.db.select().from(publishJobs);
-    expect(jobs).toHaveLength(1);
+    expect((await db.db.select().from(workflowRuns))[0]?.status).toBe('SUCCEEDED');
+    expect(await db.db.select().from(publishJobs)).toHaveLength(0);
   });
 
   it('最新修订校验失败返回 422 且不创建发布任务', async () => {

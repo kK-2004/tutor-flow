@@ -25,7 +25,13 @@ export type IconName =
   | 'play'
   | 'book'
   | 'filter'
-  | 'search';
+  | 'search'
+  | 'key'
+  | 'users'
+  | 'folder'
+  | 'file'
+  | 'chevron-down'
+  | 'chevron-right';
 
 const ICON_CLASSES: Record<IconName, string> = {
   grid: 'i-grid',
@@ -52,6 +58,12 @@ const ICON_CLASSES: Record<IconName, string> = {
   book: 'i-book',
   filter: 'i-filter',
   search: 'i-search',
+  key: 'i-key',
+  users: 'i-users',
+  folder: 'i-folder',
+  file: 'i-file',
+  'chevron-down': 'i-chevron-down',
+  'chevron-right': 'i-chevron-right',
 };
 
 /** 无障碍图标基础组件：装饰图标默认对屏幕阅读器隐藏。 */

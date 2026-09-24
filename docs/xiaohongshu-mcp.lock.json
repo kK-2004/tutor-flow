@@ -1,7 +1,0 @@
-{
-  "project": "xiaohongshu-mcp",
-  "adapterContract": "docs/xiaohongshu-mcp-contract.md#v1",
-  "image": "${XHS_MCP_IMAGE_REPOSITORY:-xpzouying/xiaohongshu-mcp}",
-  "policyVersion": "xhs-policy@2026.09",
-  "runtimeRule": "生产环境使用部署配置中的 MCP 镜像引用；镜像引用变更前必须重新执行适配器契约冒烟测试。"
-}

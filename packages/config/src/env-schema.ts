@@ -42,14 +42,11 @@ export const apiEnvSchema = z
     OPERATOR_TOKEN: z.string().min(1).optional(),
     CONTENT_CENTER_URL: z.url().optional(),
     CONTENT_CENTER_TOKEN_REF: z.string().min(5).default('env:KFILE_APP_TOKEN'),
-    XHS_MCP_URL: z.url().optional(),
-    XHS_MCP_ACCOUNT_ID: z.uuid().optional(),
-    XHS_MCP_AUTH_TOKEN_REF: z.string().min(5).optional(),
   })
   .strict();
 export type ApiEnv = z.infer<typeof apiEnvSchema>;
 
-/** Worker 进程环境（研究、生成、发布队列处理器） */
+/** Worker 进程环境（研究与生成队列处理器） */
 export const workerEnvSchema = z
   .object({
     NODE_ENV: nodeEnvField,
@@ -70,10 +67,6 @@ export const workerEnvSchema = z
     S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
     CONTENT_CENTER_URL: z.url().optional(),
     CONTENT_CENTER_TOKEN_REF: z.string().min(5).default('env:KFILE_APP_TOKEN'),
-    // 小红书 MCP sidecar 地址：由 Publisher Worker 独占使用
-    XHS_MCP_URL: z.url().optional(),
-    XHS_MCP_ACCOUNT_ID: z.uuid().optional(),
-    XHS_MCP_AUTH_TOKEN_REF: z.string().min(5).optional(),
   })
   .strict();
 export type WorkerEnv = z.infer<typeof workerEnvSchema>;

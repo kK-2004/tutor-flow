@@ -2,7 +2,7 @@
  * 运行任务仓储：创建（含触发幂等）、乐观锁状态转换、查询与取消请求。
  */
 import { assertTransition } from '@tutor-flow/domain';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import {
   IdempotencyConflictError,
@@ -13,6 +13,7 @@ import {
 } from '../lib/errors.js';
 import { redactDeep } from '../lib/redact.js';
 import type { Db, DbExecutor } from '../lib/tx.js';
+import { appendWorkflowEvent } from './events.js';
 import {
   contentJobs,
   outboxRecords,
@@ -30,6 +31,8 @@ export interface CreateRunInput {
   /** 规范化载荷哈希（幂等冲突检测） */
   requestHash: string;
   topic: string;
+  researchMode?: 'search' | 'library' | 'hybrid';
+  researchDocumentIds?: string[];
   directionMode: 'auto' | 'manual';
   publishMode: 'review' | 'auto';
   platform: 'xiaohongshu';
@@ -113,6 +116,8 @@ async function withRunInsert(db: Db, input: CreateRunInput): Promise<CreateRunRe
       .insert(contentJobs)
       .values({
         topic: input.topic,
+        researchMode: input.researchMode ?? 'search',
+        researchDocumentIds: input.researchDocumentIds ?? [],
         directionMode: input.directionMode,
         publishMode: input.publishMode,
         platform: input.platform,
@@ -307,7 +312,7 @@ export async function requireRun(db: DbExecutor, runId: string): Promise<Workflo
   const rows = await db
     .select()
     .from(workflowRuns)
-    .where(eq(workflowRuns.id, runId))
+    .where(and(eq(workflowRuns.id, runId), isNull(workflowRuns.deletedAt)))
     .limit(1);
   const run = rows[0];
   if (run === undefined) {
@@ -325,7 +330,7 @@ export async function getRunWithJob(
     .select({ run: workflowRuns, job: contentJobs })
     .from(workflowRuns)
     .innerJoin(contentJobs, eq(workflowRuns.contentJobId, contentJobs.id))
-    .where(eq(workflowRuns.id, runId))
+    .where(and(eq(workflowRuns.id, runId), isNull(workflowRuns.deletedAt)))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -339,14 +344,17 @@ export async function listResumableRuns(
     .select()
     .from(workflowRuns)
     .where(
-      inArray(workflowRuns.status, [
-        'QUEUED',
-        'RESEARCHING',
-        'GENERATING',
-        'MODERATING',
-        'RETRY_WAIT',
-        'READY_TO_PUBLISH',
-      ]),
+      and(
+        inArray(workflowRuns.status, [
+          'QUEUED',
+          'RESEARCHING',
+          'GENERATING',
+          'MODERATING',
+          'RETRY_WAIT',
+          'READY_TO_PUBLISH',
+        ]),
+        isNull(workflowRuns.deletedAt),
+      ),
     )
     .limit(limit);
   return rows;
@@ -357,8 +365,10 @@ export async function listRuns(
   db: DbExecutor,
   options: { status?: WorkflowRun['status']; limit?: number; offset?: number },
 ): Promise<{ items: Array<{ run: WorkflowRun; job: ContentJob }>; total: number }> {
-  const where =
-    options.status !== undefined ? eq(workflowRuns.status, options.status) : undefined;
+  const where = and(
+    options.status !== undefined ? eq(workflowRuns.status, options.status) : undefined,
+    isNull(workflowRuns.deletedAt),
+  );
   const items = await db
     .select({ run: workflowRuns, job: contentJobs })
     .from(workflowRuns)
@@ -372,4 +382,56 @@ export async function listRuns(
     .from(workflowRuns)
     .where(where);
   return { items, total: counts[0]?.count ?? 0 };
+}
+
+/** 将非运行中工作流从管理列表中移除，保留历史数据与审计引用。 */
+export async function softDeleteWorkflowRun(
+  db: Db,
+  runId: string,
+): Promise<{ status: WorkflowRun['status']; contentJobId: string }> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx
+      .select({ run: workflowRuns, contentJobId: contentJobs.id })
+      .from(workflowRuns)
+      .innerJoin(contentJobs, eq(workflowRuns.contentJobId, contentJobs.id))
+      .where(and(eq(workflowRuns.id, runId), isNull(workflowRuns.deletedAt)))
+      .limit(1);
+    if (current === undefined) {
+      throw new NotFoundError(`运行任务不存在：${runId}`);
+    }
+    if (
+      ![
+        'WAITING_DIRECTION',
+        'NEEDS_REVIEW',
+        'NEEDS_HUMAN',
+        'SUCCEEDED',
+        'FAILED',
+        'CANCELLED',
+      ].includes(current.run.status)
+    ) {
+      throw new StateGuardError('正在执行或发布中的工作流不能删除，请等待其停止后再试');
+    }
+    const [deleted] = await tx
+      .update(workflowRuns)
+      .set({
+        deletedAt: new Date(),
+        updatedAt: new Date(),
+        version: current.run.version + 1,
+      })
+      .where(
+        and(
+          eq(workflowRuns.id, runId),
+          eq(workflowRuns.version, current.run.version),
+          isNull(workflowRuns.deletedAt),
+        ),
+      )
+      .returning();
+    if (deleted === undefined) {
+      throw new OptimisticLockError();
+    }
+    await appendWorkflowEvent(tx, runId, 'run.deleted', {
+      previousStatus: current.run.status,
+    });
+    return { status: current.run.status, contentJobId: current.contentJobId };
+  });
 }

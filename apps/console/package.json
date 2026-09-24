@@ -2,7 +2,7 @@
   "name": "@tutor-flow/console",
   "version": "0.1.0",
   "private": true,
-  "description": "管理后台（Next.js）：概览、工作流、草稿箱、发布管理与系统设置",
+  "description": "管理后台（Next.js）：概览、工作流、草稿箱、研究资料与系统设置",
   "type": "module",
   "scripts": {
     "dev": "next dev --turbopack",

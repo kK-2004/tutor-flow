@@ -1,8 +1,8 @@
 /**
  * Publisher Adapter 契约（任务 6.2）。
  *
- * 领域代码只依赖此契约；`xiaohongshu-mcp` 适配器（6.4）与
- * 测试模拟适配器都实现它。五个操作对应规格：
+ * 仅保留历史发布记录的契约与测试模拟适配器；运行时不注册发布消费。
+ * 五个操作对应旧规格：
  * checkAuth / validate / preview / publish / queryStatus。
  *
  * 安全约定：账号 Cookie 等密钥以 secretValue 短时挂载，

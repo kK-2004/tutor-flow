@@ -13,24 +13,22 @@ import {
   type DbClient,
 } from '@tutor-flow/db';
 import { loadApiEnv, resolveDatabasePath, type ApiEnv } from '@tutor-flow/config/server';
-import {
-  createMcpPublisherAdapter,
-  createHttpMcpToolCaller,
-} from '@tutor-flow/integrations';
 import { createWorkflowEngine, type WorkflowEngine } from '@tutor-flow/workflow';
 import type { FastifyInstance } from 'fastify';
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
+import { isNull } from 'drizzle-orm';
 
 import { mapHttpError } from './lib/http.js';
 import { EnvSecretProvider } from '@tutor-flow/config/server';
 import { registerRunRoutes } from './routes/runs.js';
-import { registerAccountRoutes } from './routes/accounts.js';
 import { registerDraftRoutes } from './routes/drafts.js';
 import { registerSseRoutes } from './routes/sse.js';
 import { registerOperationsRoutes } from './routes/operations.js';
 import { registerMediaRoutes } from './routes/media.js';
 import { registerAdminAuthRoutes } from './routes/admin-auth.js';
 import { createMetrics, startSpan } from '@tutor-flow/observability';
+import { LLM_MODELS_UPDATED_CHANNEL } from '@tutor-flow/domain';
+import { Redis } from 'ioredis';
 
 export interface BuildAppOptions {
   /** 缺省时从环境变量加载并创建数据库客户端（测试时可注入替代实现） */
@@ -58,10 +56,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<AppHandle
 
   const app = Fastify({
     logger: { level: env.LOG_LEVEL },
+    // 关闭逐请求访问日志，业务日志和统一错误处理中的错误日志仍正常输出。
+    logController: new LogController({ disableRequestLogging: true }),
     // 请求体大小限制：主题与说明均较短，默认 1MiB 足够
     bodyLimit: 1024 * 1024,
   });
   const metrics = createMetrics();
+  let llmModelsPublisher: Redis | null = null;
+  app.addHook('onClose', async () => {
+    if (llmModelsPublisher) {
+      await llmModelsPublisher.quit();
+      llmModelsPublisher = null;
+    }
+  });
   const requestStarts = new Map<string, number>();
   app.addHook('onRequest', async (request, reply) => {
     requestStarts.set(request.id, Date.now());
@@ -109,7 +116,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<AppHandle
   app.get('/metrics', async (_request, reply) => {
     const [runs, publishes, accounts, plans, artifacts, steps, outbox] =
       await Promise.all([
-        db.db.select().from(workflowRuns),
+        db.db.select().from(workflowRuns).where(isNull(workflowRuns.deletedAt)),
         db.db.select().from(publishJobs),
         db.db.select().from(platformAccounts),
         db.db
@@ -229,44 +236,22 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<AppHandle
     return reply.type('text/plain; version=0.0.4').send(`${lines.join('\n')}\n`);
   });
 
-  // 发布适配器：地址与唯一账号都配置后装配，避免误读其他账号的容器登录态。
-  const mcpUrl = env.XHS_MCP_URL;
-  const mcpAccountId = env.XHS_MCP_ACCOUNT_ID;
-  const mcpAuthTokenRef = env.XHS_MCP_AUTH_TOKEN_REF;
-  const mcpSecrets = new EnvSecretProvider();
-  const mcpCallTool =
-    mcpUrl === undefined
-      ? null
-      : createHttpMcpToolCaller(
-          mcpUrl,
-          60_000,
-          mcpAuthTokenRef ? () => mcpSecrets.resolveSecret(mcpAuthTokenRef) : undefined,
-        );
-  const adapter =
-    mcpCallTool !== null && mcpAccountId !== undefined
-      ? createMcpPublisherAdapter({
-          boundAccountId: mcpAccountId,
-          callTool: mcpCallTool,
-        })
-      : null;
-
   registerAdminAuthRoutes(app, { db, env });
   registerRunRoutes(app, { db, engine, env });
   registerDraftRoutes(app, { db, env });
   registerMediaRoutes(app, { db, env });
-  registerAccountRoutes(app, {
-    db,
-    env,
-    adapter,
-    mcpCallTool,
-    secrets: new EnvSecretProvider(),
-  });
   registerSseRoutes(app, { db, env });
   registerOperationsRoutes(app, {
     db,
     env,
-    adapter,
     secrets: new EnvSecretProvider(),
+    publishLlmModelsUpdate: async () => {
+      llmModelsPublisher ??= new Redis(env.REDIS_URL, {
+        lazyConnect: true,
+        maxRetriesPerRequest: null,
+      });
+      await llmModelsPublisher.publish(LLM_MODELS_UPDATED_CHANNEL, 'updated');
+    },
   });
 
   return { app, db, engine };

@@ -113,23 +113,23 @@ export interface StepPlan {
 export function planNextStep(input: {
   completedStep: StepType;
   directionMode: 'auto' | 'manual';
+  researchMode?: 'search' | 'library' | 'hybrid';
   publishMode: 'review' | 'auto';
   /** 发布安全开关：为 true 时 auto 模式也必须经草稿箱人工批准 */
   requireHumanApproval: boolean;
 }): StepPlan {
-  const { completedStep, directionMode, publishMode, requireHumanApproval } = input;
-  const reviewMode = publishMode === 'review' || requireHumanApproval;
+  const { completedStep, directionMode } = input;
+
+  if (completedStep === 'QUERY_PLANNING' && input.researchMode === 'library') {
+    return { nextStep: 'GENERATE_DIRECTIONS' };
+  }
 
   // 审核通过后先创建草稿（审核模式），随后进入草稿箱停点
   if (completedStep === 'MODERATE_CONTENT') {
     return { nextStep: 'CREATE_DRAFT' };
   }
   if (completedStep === 'CREATE_DRAFT') {
-    if (reviewMode) {
-      return { status: 'NEEDS_REVIEW', stop: 'NEEDS_REVIEW' };
-    }
-    // 自动模式：先过发布前校验（校验处理器不通过会转入人工）
-    return { nextStep: 'VALIDATE_PUBLISH' };
+    return { status: 'NEEDS_REVIEW', stop: 'NEEDS_REVIEW' };
   }
 
   // 方向决策：人工模式停点等待；自动模式执行引擎内置选向步骤
@@ -286,6 +286,7 @@ export function createWorkflowEngine(db: DbClient): WorkflowEngine {
       const plan = planNextStep({
         completedStep,
         directionMode: job.directionMode,
+        researchMode: job.researchMode,
         publishMode: job.publishMode,
         requireHumanApproval: guards['requireHumanApproval'] !== false,
       });

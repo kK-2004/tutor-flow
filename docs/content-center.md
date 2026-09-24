@@ -13,4 +13,4 @@
 
 管理台调用 `POST /api/v1/media/uploads/init`，API 使用 Bearer 应用令牌向 k-File 申请预签名地址。浏览器直接 PUT 图片字节，成功后调用 `POST /api/v1/media/uploads/complete`；API 让 k-File 读取对象的权威元数据，然后返回媒体引用。草稿自动保存该引用，删除草稿中的引用只解除关联，不删除 k-File 中的文件。预览通过 `GET /api/v1/media/:fileId/cdn-link` 获取链接；另可通过 `GET /api/v1/media/:fileId/download-link` 获取限时下载地址。这些接口均要求运营人员身份。
 
-预签名地址在浏览器短时可见，这是直传的必要条件；它不包含应用令牌。请勿在日志、分析事件或错误上报中记录完整预签名 URL。Publisher Worker 发布前按 `fileId` 获取最新 CDN URL，并将其作为 `publish_content(images)` 的图片地址交给上游 MCP。MCP 容器必须能访问该 URL。上游发布响应不含笔记 ID，实际发布结果需人工核验；不能把管理台上传成功当作小红书发布成功。
+预签名地址在浏览器短时可见，这是直传的必要条件；它不包含应用令牌。请勿在日志、分析事件或错误上报中记录完整预签名 URL。图片仅用于草稿预览与编辑；内容生成和审核不要求上传图片。系统不调用小红书发布服务。

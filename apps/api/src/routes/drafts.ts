@@ -6,14 +6,14 @@
  */
 import {
   appendAuditEvent,
-  approveDraft,
-  computePublishIdempotencyKey,
+  approveContentDraft,
   getActivePlatformPolicy,
   getLatestDraftRevision,
   getRunWithJob,
   listDrafts,
   loadRunClaimSupport,
   NotFoundError,
+  softDeleteDraftRevisions,
 } from '@tutor-flow/db';
 import type { DbClient } from '@tutor-flow/db';
 import type { ApiEnv } from '@tutor-flow/config/server';
@@ -118,6 +118,29 @@ export function registerDraftRoutes(
         topic: loaded?.job.topic ?? '',
         updatedAt: draft.updatedAt,
       });
+    },
+  );
+
+  app.delete(
+    '/api/v1/drafts/:runId',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const actor = request.actor;
+      if (actor === undefined || actor.kind !== 'operator') {
+        return reply.code(403).send({ error: '仅运营人员可删除草稿' });
+      }
+      const { runId } = request.params as { runId: string };
+      const deleted = await softDeleteDraftRevisions(db.db, runId);
+      await appendAuditEvent(db.db, {
+        actorType: 'operator',
+        actorId: actor.id,
+        action: 'draft.deleted',
+        resourceType: 'draft_revision',
+        resourceId: runId,
+        runId,
+        payload: { revision: deleted.revision, status: deleted.status },
+      });
+      return reply.send({ runId, deleted: true });
     },
   );
 
@@ -268,16 +291,10 @@ export function registerDraftRoutes(
       if (loaded === null) {
         throw new NotFoundError(`运行任务不存在：${runId}`);
       }
-      const result = await approveDraft(db.db, {
+      const draft = await approveContentDraft(db.db, {
         runId,
         expectedRevision: body.expectedRevision,
         approvedBy: actor.id,
-        accountId: loaded.job.accountId,
-        publishIdempotencyKey: computePublishIdempotencyKey({
-          accountId: loaded.job.accountId,
-          artifactVersion: body.expectedRevision,
-        }),
-        policyVersion: (await getActivePlatformPolicy(db.db)).version,
       });
 
       await appendAuditEvent(db.db, {
@@ -285,23 +302,18 @@ export function registerDraftRoutes(
         actorId: actor.id,
         action: 'draft.approved',
         resourceType: 'draft_revision',
-        resourceId: result.draft.id,
+        resourceId: draft.id,
         runId,
-        publishJobId: result.publishJob.id,
         payload: {
-          revision: result.draft.revision,
-          created: result.created,
+          revision: draft.revision,
           policyVersion: (await getActivePlatformPolicy(db.db)).version,
         },
       });
 
       return reply.send({
         runId,
-        revision: result.draft.revision,
-        status: result.draft.status,
-        publishJobId: result.publishJob.id,
-        publishJobStatus: result.publishJob.status,
-        created: result.created,
+        revision: draft.revision,
+        status: draft.status,
       });
     },
   );

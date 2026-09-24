@@ -128,13 +128,6 @@ export function validateXhsContent(
   }
 
   // ---- 媒体 ----
-  if (content.mediaObjectKeys.length < policy.media.minCount) {
-    issues.push({
-      field: 'media',
-      severity: 'error',
-      message: `至少需要 ${policy.media.minCount} 张媒体（当前 ${content.mediaObjectKeys.length}）`,
-    });
-  }
   if (content.mediaObjectKeys.length > policy.media.maxCount) {
     issues.push({
       field: 'media',

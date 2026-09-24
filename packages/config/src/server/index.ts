@@ -21,3 +21,4 @@ export {
   maskSecretRef,
   type SecretProvider,
 } from './secret-provider.js';
+export { decryptLocalSecret, encryptLocalSecret } from './local-secret-vault.js';

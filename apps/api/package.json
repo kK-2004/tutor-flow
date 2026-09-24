@@ -19,6 +19,7 @@
     "@tutor-flow/observability": "workspace:*",
     "@tutor-flow/workflow": "workspace:*",
     "fastify": "^5.12.5",
+    "ioredis": "^6.0.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {

@@ -1,7 +1,6 @@
 /**
  * HTTP 错误映射与请求校验辅助。
  */
-import { XhsSessionError } from '@tutor-flow/integrations';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ZodError, type ZodType } from 'zod';
 
@@ -39,14 +38,6 @@ export function mapHttpError(
   request: FastifyRequest,
   reply: FastifyReply,
 ): void {
-  if (error instanceof XhsSessionError) {
-    request.log.warn({ code: error.code }, '小红书登录上游调用失败');
-    void reply.code(error.code === 'XHS_TIMEOUT' ? 504 : 502).send({
-      error: error.message,
-      code: error.code,
-    });
-    return;
-  }
   if (error instanceof RequestValidationError || error instanceof ZodError) {
     void reply.code(400).send({ error: '请求参数校验失败' });
     return;
@@ -62,6 +53,20 @@ export function mapHttpError(
     error instanceof StateGuardError
   ) {
     void reply.code(409).send({ error: error.message });
+    return;
+  }
+  // 保留 Fastify 的请求解析错误状态，避免将客户端错误误报为服务器故障。
+  if (
+    error instanceof Error &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    error.code.startsWith('FST_ERR_') &&
+    'statusCode' in error &&
+    typeof error.statusCode === 'number' &&
+    error.statusCode >= 400 &&
+    error.statusCode < 500
+  ) {
+    void reply.code(error.statusCode).send({ error: '请求格式错误', code: error.code });
     return;
   }
   // 未知错误：记录日志但不泄露内部信息

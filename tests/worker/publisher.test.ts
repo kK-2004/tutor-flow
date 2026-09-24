@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   claimSources,
@@ -7,7 +7,6 @@ import {
   draftRevisions,
   platformAccounts,
   publishJobs,
-  publishReceipts,
   requireRun,
   sourceDocuments,
   workflowRuns,
@@ -16,7 +15,6 @@ import type { DbClient } from '@tutor-flow/db';
 import { eq } from 'drizzle-orm';
 
 import {
-  createMcpPublisherAdapter,
   FakePublisherAdapter,
   PublisherError,
   type PublisherAdapter,
@@ -381,138 +379,7 @@ describe('账号通道（6.6）', () => {
   });
 });
 
-describe('MCP 适配器映射（6.4）', () => {
-  it('绑定账号不匹配时拒绝发布，不调用上游 MCP', async () => {
-    const callTool = vi.fn(async () => ({
-      content: [{ type: 'text', text: '内容发布成功: {Status:发布完成}' }],
-    }));
-    const adapter = createMcpPublisherAdapter({ boundAccountId: ACCOUNT_ID, callTool });
-    const account = { accountId: 'another-account', alias: '其他账号', secretValue: '' };
-    const content = {
-      title: '标题',
-      body: '正文',
-      tags: [],
-      mediaObjectKeys: ['https://cdn.example/cover.png'],
-      aigcDisclosed: true,
-    };
-
-    await expect(adapter.validate(account, content)).resolves.toMatchObject({
-      valid: false,
-    });
-    await expect(adapter.publish(account, content)).rejects.toMatchObject({
-      code: 'REJECTED',
-    });
-    expect(callTool).not.toHaveBeenCalled();
-  });
-
-  it('发布前按 fileId 换取 CDN URL，不把文件元数据传给 MCP', async () => {
-    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
-    const resolved: number[] = [];
-    const adapter = createMcpPublisherAdapter({
-      resolveMediaUrl: async (fileId) => {
-        resolved.push(fileId);
-        return `https://cdn.example/${fileId}.png`;
-      },
-      callTool: async (tool, args) => {
-        calls.push({ tool, args });
-        return { content: [{ type: 'text', text: '内容发布成功: {Status:发布完成}' }] };
-      },
-    });
-    await expect(
-      adapter.publish(
-        { accountId: 'a', alias: 'a', secretValue: 'cookie' },
-        {
-          title: '标题',
-          body: '正文',
-          tags: [],
-          mediaObjectKeys: [{ fileId: 42, name: '封面.png', contentType: 'image/png' }],
-          aigcDisclosed: true,
-        },
-      ),
-    ).rejects.toMatchObject({ code: 'NEEDS_HUMAN', sideEffectSuspected: true });
-    expect(resolved).toEqual([42]);
-    expect(calls[0]?.tool).toBe('publish_content');
-    expect(calls[0]?.args['images']).toEqual(['https://cdn.example/42.png']);
-    expect(calls[0]?.args).not.toHaveProperty('cookie');
-  });
-
-  it('按容器登录态检查授权，发布结果无 ID 时不伪造回执', async () => {
-    const adapterMcp = createMcpPublisherAdapter({
-      callTool: async (tool) => {
-        if (tool === 'check_login_status') {
-          return { content: [{ type: 'text', text: '✅ 已登录\n用户名: 测试账号' }] };
-        }
-        return { content: [{ type: 'text', text: '内容发布成功: {Status:发布完成}' }] };
-      },
-    });
-    await expect(
-      adapterMcp.checkAuth({ accountId: 'a', alias: 'a', secretValue: '' }),
-    ).resolves.toMatchObject({ healthy: 'HEALTHY' });
-    await expect(
-      adapterMcp.publish(
-        { accountId: 'a', alias: 'a', secretValue: 'cookie' },
-        {
-          title: '标题',
-          body: '正文',
-          tags: [],
-          mediaObjectKeys: ['https://cdn.example/cover.png'],
-          aigcDisclosed: true,
-        },
-      ),
-    ).rejects.toMatchObject({ code: 'NEEDS_HUMAN' });
-
-    const badAdapter = createMcpPublisherAdapter({
-      callTool: async () => ({
-        isError: true,
-        content: [{ type: 'text', text: '失败' }],
-      }),
-    });
-    await expect(
-      badAdapter.publish(
-        { accountId: 'a', alias: 'a', secretValue: 'cookie' },
-        {
-          title: '标题',
-          body: '正文',
-          tags: [],
-          mediaObjectKeys: ['https://cdn.example/cover.png'],
-          aigcDisclosed: true,
-        },
-      ),
-    ).rejects.toMatchObject({ code: 'NEEDS_HUMAN', sideEffectSuspected: true });
-  });
-
-  it('上游仅返回发布成功文本时任务转人工且不写虚假回执', async () => {
-    await seedPublishableRunWithDraftId('上游发布文本测试');
-    await seedPublishJob();
-    await db.db
-      .update(draftRevisions)
-      .set({
-        mediaObjectKeys: [{ fileId: 42, name: '封面.png', contentType: 'image/png' }],
-      })
-      .where(eqDraft());
-    holder.adapter = createMcpPublisherAdapter({
-      resolveMediaUrl: async () => 'https://cdn.example/cover.png',
-      callTool: async () => ({
-        content: [{ type: 'text', text: '内容发布成功: {Status:发布完成}' }],
-      }),
-    }) as never;
-
-    await expect(
-      publish({
-        data: { runId: RUN_ID, stepType: 'PUBLISH' as const, attemptNo: 1 },
-        run: await requireRun(db.db, RUN_ID),
-        attempt: {},
-      } as never),
-    ).rejects.toMatchObject({ code: 'NEEDS_HUMAN' });
-
-    const jobs = await db.db.select().from(publishJobs);
-    const receipts = await db.db.select().from(publishReceipts);
-    expect(jobs[0]?.status).toBe('NEEDS_HUMAN');
-    expect(receipts).toHaveLength(0);
-  });
-});
-
-// ---- 辅助 ----
+// 历史发布处理器测试仍用于确认旧记录不会重复发布；运行时不再注册发布消费。
 function eqJob(id: string) {
   return eq(publishJobs.id, id);
 }

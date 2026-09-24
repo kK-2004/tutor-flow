@@ -23,6 +23,7 @@ import {
   getRunWithJob,
   getSetting,
   queryPlans,
+  researchDocuments,
   sourceDocuments,
   type DbClient,
 } from '@tutor-flow/db';
@@ -83,6 +84,73 @@ const llmQueryListSchema = z.array(llmQuerySchema);
 export interface QueryPlanningDeps {
   db: DbClient;
   llm: LlmGateway;
+  textCache?: ResearchTextCache;
+}
+
+async function seedLibrarySources(
+  db: DbClient,
+  textCache: ResearchTextCache,
+  runId: string,
+  documentIds: string[],
+  createClaims: boolean,
+): Promise<number> {
+  const docs = await db.db
+    .select()
+    .from(researchDocuments)
+    .where(inArray(researchDocuments.id, documentIds));
+  if (docs.length !== documentIds.length) {
+    throw new StepFailure('VALIDATION', '所选研究资料不存在');
+  }
+  for (const doc of docs) {
+    const urlHash = createHash('sha256').update(doc.id).digest('hex');
+    const [existing] = await db.db
+      .select()
+      .from(sourceDocuments)
+      .where(and(eq(sourceDocuments.runId, runId), eq(sourceDocuments.urlHash, urlHash)))
+      .limit(1);
+    const [source] =
+      existing === undefined
+        ? await db.db
+            .insert(sourceDocuments)
+            .values({
+              runId,
+              canonicalUrl: `library://research/${doc.id}`,
+              urlHash,
+              title: doc.title,
+              domain: '研究资料库',
+              language: 'zh',
+              sourceType: 'OTHER',
+              fetchStatus: 'FETCHED',
+              fetchedAt: new Date(),
+              isPrimary: true,
+              clusterRole: 'CANONICAL',
+              totalScore: 100,
+            })
+            .returning()
+        : [existing];
+    if (source === undefined) continue;
+    await textCache.set(runId, source.id, doc.markdown);
+    if (!createClaims) continue;
+    const [linkedClaim] = await db.db
+      .select({ claimId: claimSources.claimId })
+      .from(claimSources)
+      .where(eq(claimSources.sourceId, source.id))
+      .limit(1);
+    if (linkedClaim !== undefined) continue;
+    const [claim] = await db.db
+      .insert(claims)
+      .values({
+        runId,
+        statement: `研究资料「${doc.title}」：${doc.markdown.slice(0, 1000)}`,
+        confidence: 1,
+        primarySourceSupported: true,
+      })
+      .returning();
+    if (claim !== undefined) {
+      await db.db.insert(claimSources).values({ claimId: claim.id, sourceId: source.id });
+    }
+  }
+  return docs.length;
 }
 
 /** 读取搜索预算（系统设置；未配置时回退默认值） */
@@ -137,6 +205,21 @@ export function createQueryPlanningHandler(deps: QueryPlanningDeps): StepHandler
     const loaded = await getRunWithJob(deps.db.db, run.id);
     if (loaded === null) {
       throw new StepFailure('INTERNAL', `运行任务不存在：${run.id}`);
+    }
+    if (loaded.job.researchMode !== 'search') {
+      if (deps.textCache === undefined) {
+        throw new StepFailure('INTERNAL', '资料缓存未配置');
+      }
+      const count = await seedLibrarySources(
+        deps.db,
+        deps.textCache,
+        run.id,
+        loaded.job.researchDocumentIds,
+        loaded.job.researchMode === 'library',
+      );
+      if (loaded.job.researchMode === 'library') {
+        return { outputRef: `library:${count}` };
+      }
     }
     const budget = await loadSearchBudget(deps.db);
 
@@ -278,6 +361,9 @@ export function createSearchHandler(deps: {
           });
         }
       } catch (error) {
+        if (error instanceof StepFailure) {
+          throw error;
+        }
         const retryable = (error as { retryable?: boolean }).retryable === true;
         sawRetryableFailure = sawRetryableFailure || retryable;
         partialFailures.push({
@@ -766,12 +852,28 @@ export function createScoreSourcesHandler(deps: {
 export const CLAIM_EXTRACTION_PROMPT_VERSION = 'claim-extraction@1';
 
 /** LLM 输出的单条事实（来源以规范 URL 标识） */
-const llmClaimSchema = z.object({
-  statement: z.string().trim().min(1),
-  sources: z.array(z.string().trim().min(1)).default([]),
-  confidence: z.coerce.number().min(0).max(1).default(0.5),
-});
-const llmClaimListSchema = z.object({ claims: z.array(llmClaimSchema).default([]) });
+const llmClaimSchema = z
+  .object({
+    statement: z.string().trim().min(1),
+    sources: z.array(z.string().trim().min(1)),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
+const llmClaimListSchema = z.object({ claims: z.array(llmClaimSchema) }).strict();
+/** 发送给模型的兼容 schema；语义细化在本地校验，避免服务商不支持长度约束。 */
+const llmClaimOutputSchema = z
+  .object({
+    claims: z.array(
+      z
+        .object({
+          statement: z.string(),
+          sources: z.array(z.string()),
+          confidence: z.number(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 /** 单个来源进入模型的上下文结构 */
 interface ClaimSourceContext {
@@ -788,6 +890,8 @@ async function selectClaimSources(
   runId: string,
   textCache: ResearchTextCache,
   limit: number,
+  fetcher: PageFetcher,
+  extractor: ContentExtractor,
 ): Promise<ClaimSourceContext[]> {
   const rows = await db.db
     .select()
@@ -804,9 +908,58 @@ async function selectClaimSources(
     if (selected.length >= limit) {
       break;
     }
-    const text = await textCache.get(runId, row.id);
+    let text = await textCache.get(runId, row.id);
     if (text === null) {
-      continue; // 缓存缺失的来源不参与本轮抽取（元数据仍保留用于审计）
+      if (row.canonicalUrl.startsWith('library://research/')) {
+        const documentId = row.canonicalUrl.slice('library://research/'.length);
+        const { researchDocuments } = await import('@tutor-flow/db');
+        const [document] = await db.db
+          .select()
+          .from(researchDocuments)
+          .where(eq(researchDocuments.id, documentId))
+          .limit(1);
+        if (document !== undefined) {
+          text = document.markdown;
+          await textCache.set(runId, row.id, text);
+        }
+      }
+    }
+    if (text === null) {
+      try {
+        const page = await fetcher.fetch(row.canonicalUrl);
+        const extracted = extractor.extract(page);
+        if (extracted.text.length < 50) {
+          throw new GatewayError('正文过短，无法作为证据来源', { retryable: false });
+        }
+        text = extracted.text;
+        await textCache.set(runId, row.id, text);
+        await db.db
+          .update(sourceDocuments)
+          .set({
+            contentHash: createHash('sha256').update(text).digest('hex'),
+            fetchedAt: new Date(),
+            fetchNote: null,
+          })
+          .where(eq(sourceDocuments.id, row.id));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message.slice(0, 160) : '重新抓取失败';
+        if (error instanceof GatewayError && error.retryable) {
+          await db.db
+            .update(sourceDocuments)
+            .set({ fetchNote: `${message}（恢复抓取可重试）` })
+            .where(eq(sourceDocuments.id, row.id));
+          throw new StepFailure('TRANSIENT', `来源正文恢复失败：${message}`);
+        }
+        await db.db
+          .update(sourceDocuments)
+          .set({ fetchStatus: 'FAILED', fetchNote: `恢复抓取失败：${message}` })
+          .where(eq(sourceDocuments.id, row.id));
+        continue;
+      }
+    }
+    if (text === null) {
+      continue;
     }
     selected.push({
       sourceId: row.id,
@@ -824,6 +977,8 @@ export function createExtractClaimsHandler(deps: {
   db: DbClient;
   llm: LlmGateway;
   textCache: ResearchTextCache;
+  fetcher: PageFetcher;
+  extractor: ContentExtractor;
 }): StepHandler {
   return async (context) => {
     const { run } = context;
@@ -832,7 +987,14 @@ export function createExtractClaimsHandler(deps: {
       throw new StepFailure('INTERNAL', '运行任务不存在');
     }
 
-    const sources = await selectClaimSources(deps.db, run.id, deps.textCache, 8);
+    const sources = await selectClaimSources(
+      deps.db,
+      run.id,
+      deps.textCache,
+      8,
+      deps.fetcher,
+      deps.extractor,
+    );
     if (sources.length === 0) {
       throw new StepFailure('CONTENT', '没有可用于事实抽取的来源正文');
     }
@@ -844,8 +1006,9 @@ export function createExtractClaimsHandler(deps: {
     ].join('\n');
     const userPrompt = [
       `主题：${loaded.job.topic}`,
-      '请从以下资料中提取事实陈述。每条事实必须标注支持它的来源 URL（只能是资料中的 URL）。',
-      '没有来源支持的事实不要输出。',
+      '请从以下资料中提取最多 8 条最重要、可核验的事实。每条用一句简短陈述，最多 80 个汉字。',
+      '每条事实必须标注支持它的来源 URL（只能是资料中的 URL），没有来源支持的事实不要输出。',
+      '只输出符合指定结构的 JSON，不要输出解释、推理过程或 Markdown。',
       '',
       ...sources.map((source) =>
         wrapUntrustedText(`${source.title}（${source.canonicalUrl}）`, source.text),
@@ -859,7 +1022,9 @@ export function createExtractClaimsHandler(deps: {
       promptVersion: CLAIM_EXTRACTION_PROMPT_VERSION,
       systemPrompt,
       userPrompt,
-      maxTokens: 2048,
+      maxTokens: 16384,
+      outputSchema: llmClaimOutputSchema,
+      outputName: 'extracted_claims',
     });
 
     const objectText = extractJsonObjectText(response.text);

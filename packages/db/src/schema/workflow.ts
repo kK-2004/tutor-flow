@@ -70,6 +70,10 @@ export const contentJobs = sqliteTable(
     id: uuidPk(),
     /** 内容主题（非空） */
     topic: text().notNull(),
+    researchMode: text({ enum: ['search', 'library', 'hybrid'] })
+      .notNull()
+      .default('search'),
+    researchDocumentIds: text({ mode: 'json' }).$type<string[]>().notNull().default([]),
     directionMode: directionModeColumn().notNull(),
     publishMode: publishModeColumn().notNull(),
     platform: platformColumn().notNull(),
@@ -118,6 +122,7 @@ export const workflowRuns = sqliteTable(
     traceId: text(),
     createdAt: now(),
     updatedAt: now(),
+    deletedAt: timestampMs(),
   },
   (t) => [
     index('workflow_run_status_idx').on(t.status),

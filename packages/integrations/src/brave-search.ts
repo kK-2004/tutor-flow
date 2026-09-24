@@ -40,6 +40,8 @@ export interface BraveSearchOptions {
   proxyUrl?: string;
   /** 单次请求超时（毫秒） */
   timeoutMs?: number;
+  /** 相邻请求的最小间隔（毫秒），默认遵循 Brave Search 的 1 RPS 限制 */
+  minRequestIntervalMs?: number;
 }
 
 const DEFAULT_ENDPOINT = 'https://api.search.brave.com/res/v1/web/search';
@@ -92,10 +94,27 @@ export function createBraveSearchGateway(options: BraveSearchOptions): SearchGat
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 15_000;
+  const minRequestIntervalMs = options.minRequestIntervalMs ?? 1_000;
   const proxyAgent = options.proxyUrl ? new SocksProxyAgent(options.proxyUrl) : null;
+  let nextRequestAt = 0;
+  let requestSchedule: Promise<void> = Promise.resolve();
+
+  const waitForRequestSlot = () => {
+    const scheduled = requestSchedule.then(async () => {
+      const waitMs = Math.max(0, nextRequestAt - Date.now());
+      if (waitMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+      }
+      nextRequestAt = Date.now() + minRequestIntervalMs;
+    });
+    requestSchedule = scheduled.catch(() => undefined);
+    return scheduled;
+  };
 
   return {
     async search(query: SearchQuery): Promise<SearchResultItem[]> {
+      await waitForRequestSlot();
+
       const url = new URL(endpoint);
       url.searchParams.set('q', query.query);
       url.searchParams.set('count', String(Math.min(query.maxResults, 20)));

@@ -510,7 +510,7 @@ function Shell({
   const title = navItems.find((item) => item.view === active)?.label ?? '概览';
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className="sidebar" aria-label="应用导航">
         <div className="brand">
           <span className="brand-mark">
             <Icon name="grid" />
@@ -555,9 +555,13 @@ function Shell({
               <strong>{user.username}</strong>
               <span>{user.role === 'SUPER_ADMIN' ? '超级管理员' : '管理员'}</span>
             </button>
-            <button className="button primary" onClick={onCreate}>
+            <button
+              className="button primary topbar-create"
+              onClick={onCreate}
+              aria-label="新建任务"
+            >
               <Icon name="plus" />
-              新建任务
+              <span>新建任务</span>
             </button>
           </div>
         </header>
@@ -975,22 +979,22 @@ function DraftsView({ onOpen }: { onOpen: (id: string) => void }) {
               <tbody>
                 {items.map((item) => (
                   <tr key={item.runId}>
-                    <td>
+                    <td data-label="标题">
                       <strong className="truncate-text" title={item.title}>
                         {item.title}
                       </strong>
                     </td>
-                    <td>
+                    <td data-label="主题">
                       <span className="truncate-text" title={item.topic}>
                         {item.topic}
                       </span>
                     </td>
-                    <td>v{item.revision}</td>
-                    <td>
+                    <td data-label="修订">v{item.revision}</td>
+                    <td data-label="状态">
                       <Status value={item.status} />
                     </td>
-                    <td>{formatTime(item.updatedAt)}</td>
-                    <td>
+                    <td data-label="更新时间">{formatTime(item.updatedAt)}</td>
+                    <td data-label="操作">
                       <span className="run-actions">
                         <button
                           className="button compact"
@@ -1998,11 +2002,14 @@ function ModelSettingsSection({
     );
 
   return (
-    <section className="card model-settings-card">
-      <div className="card-heading">
+    <details className="card model-settings-card">
+      <summary className="card-heading model-settings-summary">
         <h2>模型 Provider 与模型</h2>
-        <span>密钥加密保存</span>
-      </div>
+        <span className="model-settings-summary-meta">
+          <span>密钥加密保存</span>
+          <Icon name="chevron-down" className="model-settings-toggle-icon" />
+        </span>
+      </summary>
       <div className="card-body model-settings-body">
         <p className="small muted">
           每个 Provider 配置一次连接地址，可添加多个模型。未指定阶段模型时使用默认模型。
@@ -2225,7 +2232,7 @@ function ModelSettingsSection({
         </div>
         <ToastNotice message={message} tone={tone ?? 'info'} />
       </div>
-    </section>
+    </details>
   );
 }
 

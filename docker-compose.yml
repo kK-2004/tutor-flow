@@ -24,6 +24,7 @@ services:
       CONSOLE_API_BASE_URL: http://127.0.0.1:4000
       SQLITE_PATH: /data/tutor-flow.db
       REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379}
+      BRAVE_PROXY_URL: ${BRAVE_PROXY_URL:-}
       BOOTSTRAP_SUPER_ADMIN_USERNAME: ${BOOTSTRAP_SUPER_ADMIN_USERNAME:-admin}
       BOOTSTRAP_SUPER_ADMIN_PASSWORD: ${BOOTSTRAP_SUPER_ADMIN_PASSWORD:-change-me-now-123}
     ports:

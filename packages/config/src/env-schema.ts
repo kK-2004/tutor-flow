@@ -23,6 +23,16 @@ const logLevelField = logLevelSchema.default('info');
 /** SQLite 数据库文件路径（本地单文件，无需独立数据库服务） */
 const sqlitePathField = z.string().min(1).default('./data/tutor-flow.db');
 const redisUrlField = z.string().min(1);
+const optionalSocksProxyUrlField = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z
+    .url()
+    .refine(
+      (value) => ['socks5:', 'socks5h:'].includes(new URL(value).protocol),
+      '必须使用 socks5:// 或 socks5h:// 代理地址',
+    )
+    .optional(),
+);
 
 /**
  * API 进程环境。
@@ -59,6 +69,7 @@ export const workerEnvSchema = z
       .url()
       .default('https://api.search.brave.com/res/v1/web/search'),
     SEARCH_BRAVE_SECRET_REF: z.string().min(1).default('env:BRAVE_API_KEY'),
+    BRAVE_PROXY_URL: optionalSocksProxyUrlField,
     // S3 兼容对象存储（接入已部署的 MinIO）：AI 生成图片等媒体资产
     S3_ENDPOINT: z.url().optional(),
     S3_REGION: z.string().min(1).default('us-east-1'),

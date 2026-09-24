@@ -5,13 +5,24 @@ import {
   DEFAULT_XHS_PROMPT,
   LLM_TASKS,
   PLATFORM_OPTIONS,
+  formatResearchDocumentImage,
   type Platform,
   type ContentPromptsConfig,
   type LlmModelsConfig,
   type ModelSelection,
 } from '@tutor-flow/domain';
 import type { DraftMedia } from '@tutor-flow/domain';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import rehypeHighlight from 'rehype-highlight';
 
 import { WorkflowDetailView } from './workflow-detail.js';
 import { formatTokenCount } from './number-format.js';
@@ -120,8 +131,6 @@ interface DraftDetails {
 }
 
 interface ContentCenterConfig {
-  source: 'minio';
-  path: string;
   maxUploadBytes: number;
   downloadExpiresIn: number;
   cdnExpiresIn: number;
@@ -210,6 +219,136 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   return (await response.json()) as T;
+}
+
+function uploadFileWithProgress(
+  url: string,
+  file: File,
+  onProgress: (percent: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('PUT', url);
+    request.setRequestHeader('content-type', file.type);
+    request.upload.onprogress = (event) => {
+      const total = event.lengthComputable && event.total > 0 ? event.total : file.size;
+      onProgress(Math.min(100, Math.round((event.loaded / total) * 100)));
+    };
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        onProgress(100);
+        resolve();
+        return;
+      }
+      reject(new Error(`图片上传失败（${request.status}）`));
+    };
+    request.onerror = () => reject(new Error('图片上传失败'));
+    request.onabort = () => reject(new Error('图片上传已取消'));
+    request.send(file);
+  });
+}
+
+const uploadProgressPhases = {
+  initializingStart: 3,
+  initializingEnd: 15,
+  uploadingEnd: 95,
+} as const;
+
+function ResearchImagePreview({ fileId, alt }: { fileId: number; alt: string }) {
+  const [url, setUrl] = useState('');
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void api<{ url: string }>(`/api/v1/media/${fileId}/cdn-link`)
+      .then((result) => {
+        if (active) setUrl(result.url);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [fileId]);
+  if (failed) return <span className="research-image-error">图片预览加载失败</span>;
+  if (url === '') return <span className="research-image-loading">图片加载中…</span>;
+  return <img className="research-document-image" src={url} alt={alt} />;
+}
+
+function researchMarkdownUrlTransform(url: string): string {
+  if (/^content-center:\/\/file\/\d+$/.test(url)) return url;
+  return defaultUrlTransform(url);
+}
+
+// 高亮语言别名：让用户手写的 ```py、```js 等围栏也能命中高亮
+const codeHighlightOptions = {
+  aliases: {
+    py: 'python',
+    js: 'javascript',
+    ts: 'typescript',
+    'c++': 'cpp',
+    golang: 'go',
+    rs: 'rust',
+    sh: 'bash',
+    shell: 'bash',
+    yml: 'yaml',
+  },
+};
+
+// “代码”按钮下拉列表：显示名 + 围栏语言标识（均在高亮默认语言集内）
+const CODE_LANGUAGES: Array<[label: string, id: string]> = [
+  ['C', 'c'],
+  ['C++', 'cpp'],
+  ['Java', 'java'],
+  ['Python', 'python'],
+  ['JavaScript', 'javascript'],
+  ['TypeScript', 'typescript'],
+  ['Go', 'go'],
+  ['Rust', 'rust'],
+  ['SQL', 'sql'],
+  ['Bash', 'bash'],
+  ['JSON', 'json'],
+  ['YAML', 'yaml'],
+  ['HTML', 'html'],
+  ['CSS', 'css'],
+];
+
+function ResearchMarkdownPreview({ markdown }: { markdown: string }) {
+  return (
+    <ReactMarkdown
+      urlTransform={researchMarkdownUrlTransform}
+      rehypePlugins={[[rehypeHighlight, codeHighlightOptions]]}
+      components={{
+        pre({ children }) {
+          // 围栏代码块外层包一层容器，右上角展示语言标签（如 java）
+          const codeElement = children as ReactElement<{ className?: string }>;
+          const match = /language-(\S+)/.exec(codeElement?.props?.className ?? '');
+          return (
+            <div className="research-code-block">
+              {match ? (
+                <span className="research-code-block-lang">{match[1]}</span>
+              ) : null}
+              <pre>{children}</pre>
+            </div>
+          );
+        },
+        img({ src, alt }) {
+          const match = /^content-center:\/\/file\/(\d+)$/.exec(
+            typeof src === 'string' ? src : '',
+          );
+          if (!match) return null;
+          return (
+            <ResearchImagePreview
+              fileId={Number(match[1])}
+              alt={typeof alt === 'string' ? alt : '图片'}
+            />
+          );
+        },
+      }}
+    >
+      {markdown}
+    </ReactMarkdown>
+  );
 }
 
 function useTheme(): [ThemeMode, (mode: ThemeMode) => void] {
@@ -1044,6 +1183,9 @@ function ResearchView() {
     updatedAt?: string;
   };
   type Folder = { id: string; name: string; parentId: string | null };
+  type UploadedImage = { fileId: number; name: string; contentType: string };
+  type PendingImage = UploadedImage & { start: number; end: number };
+  type FailedImageUpload = { file: File; start: number; end: number };
   const [library, setLibrary] = useState<{ documents: Doc[]; folders: Folder[] }>({
     documents: [],
     folders: [],
@@ -1058,12 +1200,42 @@ function ResearchView() {
   const [markdown, setMarkdown] = useState('');
   const [folderId, setFolderId] = useState('');
   const [editorMode, setEditorMode] = useState<'edit' | 'split' | 'preview'>('split');
+  const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageNotice, setImageNotice] = useState('');
+  const [imageNoticeState, setImageNoticeState] = useState<
+    'neutral' | 'uploading' | 'error'
+  >('neutral');
+  const [imageUploadProgress, setImageUploadProgress] = useState(0);
+  const [failedImageUpload, setFailedImageUpload] = useState<FailedImageUpload | null>(
+    null,
+  );
+  const [imageDragActive, setImageDragActive] = useState(false);
+  const [codeMenuOpen, setCodeMenuOpen] = useState(false);
   const markdownRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const codeMenuRef = useRef<HTMLDivElement>(null);
   const refresh = () =>
     void api<typeof library>('/api/v1/research-library')
       .then(setLibrary)
       .catch(() => undefined);
   useEffect(refresh, []);
+  useEffect(() => {
+    if (!codeMenuOpen) return;
+    // 点击下拉外部或按 Esc 时收起语言列表
+    const onPointerDown = (event: PointerEvent) => {
+      if (!codeMenuRef.current?.contains(event.target as Node)) setCodeMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCodeMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [codeMenuOpen]);
   const currentFolder =
     library.folders.find((folder) => folder.id === activeFolderId) ?? null;
   const childFolders = library.folders.filter(
@@ -1089,6 +1261,12 @@ function ResearchView() {
     setMarkdown(doc?.markdown ?? '');
     setFolderId(doc?.folderId ?? activeFolderId ?? '');
     setEditorMode('split');
+    setPendingImage(null);
+    setImageNotice('');
+    setImageNoticeState('neutral');
+    setImageUploadProgress(0);
+    setFailedImageUpload(null);
+    setCodeMenuOpen(false);
     setEditorOpen(true);
   };
   const save = () => {
@@ -1183,20 +1361,135 @@ function ResearchView() {
       );
     });
   };
-  const previewLines = markdown.split('\n').map((line, index) => {
-    if (line.startsWith('### ')) return <h3 key={index}>{line.slice(4)}</h3>;
-    if (line.startsWith('## ')) return <h2 key={index}>{line.slice(3)}</h2>;
-    if (line.startsWith('# ')) return <h1 key={index}>{line.slice(2)}</h1>;
-    if (line.startsWith('> '))
-      return <blockquote key={index}>{line.slice(2)}</blockquote>;
-    if (line.startsWith('- ') || line.startsWith('* '))
-      return (
-        <div className="research-list-item" key={index}>
-          • {line.slice(2)}
-        </div>
+  const insertAtRange = (text: string, start: number, end: number) => {
+    const prefix = start > 0 && markdown[start - 1] !== '\n' ? '\n\n' : '';
+    const suffix = end < markdown.length && markdown[end] !== '\n' ? '\n\n' : '';
+    const insertion = `${prefix}${text}${suffix}`;
+    setMarkdown(`${markdown.slice(0, start)}${insertion}${markdown.slice(end)}`);
+    requestAnimationFrame(() => {
+      const position = start + insertion.length;
+      markdownRef.current?.focus();
+      markdownRef.current?.setSelectionRange(position, position);
+    });
+  };
+  const insertCodeBlock = (language: string) => {
+    const area = markdownRef.current;
+    if (!area) return;
+    const start = area.selectionStart;
+    const end = area.selectionEnd;
+    const selectedText = markdown.slice(start, end);
+    // 代码块独占段落：紧邻文字时补一个换行
+    const prefix = start > 0 && markdown[start - 1] !== '\n' ? '\n' : '';
+    const suffix = end < markdown.length && markdown[end] !== '\n' ? '\n' : '';
+    const insertion = `${prefix}\`\`\`${language}\n${selectedText}\n\`\`\`${suffix}`;
+    setMarkdown(`${markdown.slice(0, start)}${insertion}${markdown.slice(end)}`);
+    setCodeMenuOpen(false);
+    requestAnimationFrame(() => {
+      // 光标移动到围栏中间（选中文本时落在其末尾）
+      const position = start + prefix.length + language.length + 4 + selectedText.length;
+      area.focus();
+      area.setSelectionRange(position, position);
+    });
+  };
+  const uploadResearchImage = async (
+    file: File,
+    previousRange?: Pick<FailedImageUpload, 'start' | 'end'>,
+  ) => {
+    setFailedImageUpload(null);
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setImageNotice('仅支持 JPEG、PNG、WebP 图片');
+      setImageNoticeState('error');
+      setImageUploadProgress(100);
+      return;
+    }
+    const area = markdownRef.current;
+    const start = previousRange?.start ?? area?.selectionStart ?? markdown.length;
+    const end = previousRange?.end ?? area?.selectionEnd ?? start;
+    setImageBusy(true);
+    setImageNotice('正在上传图片…');
+    setImageNoticeState('uploading');
+    setImageUploadProgress(uploadProgressPhases.initializingStart);
+    const initializationProgressTimer = window.setInterval(() => {
+      setImageUploadProgress((current) =>
+        Math.min(uploadProgressPhases.initializingEnd - 1, current + 1),
       );
-    return <p key={index}>{line || '\u00a0'}</p>;
-  });
+    }, 350);
+    try {
+      let initialized: { storageKey: string; putUrl: string; source: string };
+      try {
+        initialized = await api('/api/v1/media/uploads/init', {
+          method: 'POST',
+          body: JSON.stringify({
+            filename: file.name,
+            size: file.size,
+            contentType: file.type,
+          }),
+        });
+      } finally {
+        window.clearInterval(initializationProgressTimer);
+      }
+      setImageUploadProgress(uploadProgressPhases.initializingEnd);
+      await uploadFileWithProgress(initialized.putUrl, file, (uploadPercent) => {
+        const uploadRange =
+          uploadProgressPhases.uploadingEnd - uploadProgressPhases.initializingEnd;
+        setImageUploadProgress(
+          uploadProgressPhases.initializingEnd +
+            Math.round((uploadPercent / 100) * uploadRange),
+        );
+      });
+      const completed = await api<UploadedImage>('/api/v1/media/uploads/complete', {
+        method: 'POST',
+        body: JSON.stringify({
+          storageKey: initialized.storageKey,
+          source: initialized.source,
+        }),
+      });
+      setPendingImage({ ...completed, start, end });
+      setImageNotice('图片已上传，请选择处理方式');
+      setImageNoticeState('neutral');
+    } catch (error) {
+      setImageNotice(error instanceof Error ? error.message : '图片上传失败');
+      setImageNoticeState('error');
+      setImageUploadProgress(100);
+      setFailedImageUpload({ file, start, end });
+    } finally {
+      window.clearInterval(initializationProgressTimer);
+      setImageBusy(false);
+    }
+  };
+  const extractPendingImageText = async () => {
+    if (pendingImage === null) return;
+    setImageBusy(true);
+    setImageNotice('模型正在提取图片文字…');
+    try {
+      const result = await api<{ text: string }>(
+        '/api/v1/research-library/images/extract-text',
+        {
+          method: 'POST',
+          body: JSON.stringify({ fileId: pendingImage.fileId }),
+        },
+      );
+      insertAtRange(result.text, pendingImage.start, pendingImage.end);
+      setPendingImage(null);
+      setImageNotice('图片文字已插入');
+      setImageNoticeState('neutral');
+    } catch (error) {
+      setImageNotice(error instanceof Error ? error.message : '图片文字提取失败');
+    } finally {
+      setImageBusy(false);
+    }
+  };
+  const insertPendingImage = () => {
+    if (pendingImage === null) return;
+    insertAtRange(
+      formatResearchDocumentImage(pendingImage.fileId, pendingImage.name),
+      pendingImage.start,
+      pendingImage.end,
+    );
+    setPendingImage(null);
+    setImageNotice('图片已插入资料');
+    setImageNoticeState('neutral');
+  };
   if (editorOpen)
     return (
       <div className="research-editor-overlay">
@@ -1233,7 +1526,11 @@ function ResearchView() {
               </button>
             ))}
           </div>
-          <button className="button primary" onClick={save}>
+          <button
+            className="button primary"
+            disabled={imageBusy || pendingImage !== null}
+            onClick={save}
+          >
             保存资料
           </button>
         </div>
@@ -1245,21 +1542,139 @@ function ResearchView() {
           <button onClick={() => insertMarkdown('*', '*')}>
             <i>I</i>
           </button>
-          <button onClick={() => insertMarkdown('- ')}>列表</button>
           <button onClick={() => insertMarkdown('> ')}>引用</button>
-          <button onClick={() => insertMarkdown('`', '`')}>代码</button>
+          <div className="research-code-menu" ref={codeMenuRef}>
+            <button
+              aria-expanded={codeMenuOpen}
+              aria-haspopup="menu"
+              aria-label="插入代码块"
+              onClick={() => setCodeMenuOpen((open) => !open)}
+            >
+              代码
+            </button>
+            {codeMenuOpen ? (
+              <div className="research-code-menu-list" role="menu">
+                {CODE_LANGUAGES.map(([label, id]) => (
+                  <button key={id} role="menuitem" onClick={() => insertCodeBlock(id)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <button
+            disabled={imageBusy || pendingImage !== null}
+            onClick={() => imageInputRef.current?.click()}
+          >
+            插入图片
+          </button>
+          <input
+            ref={imageInputRef}
+            className="research-image-input"
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (file) void uploadResearchImage(file);
+            }}
+          />
+          <span className="research-image-hint">也可以把图片拖进编辑区</span>
         </div>
+        {pendingImage ? (
+          <div className="research-image-choice">
+            <ResearchImagePreview fileId={pendingImage.fileId} alt={pendingImage.name} />
+            <div>
+              <strong>{pendingImage.name}</strong>
+              <p>{imageBusy ? imageNotice : '选择这张图片在资料中的处理方式。'}</p>
+            </div>
+            <button
+              className="button"
+              disabled={imageBusy}
+              onClick={() => void extractPendingImageText()}
+            >
+              请求模型提取文字
+            </button>
+            <button
+              className="button primary"
+              disabled={imageBusy}
+              onClick={insertPendingImage}
+            >
+              插入图片到文章
+            </button>
+          </div>
+        ) : imageNotice ? (
+          <div
+            className={`research-image-notice is-${imageNoticeState}`}
+            role={imageNoticeState === 'error' ? 'alert' : undefined}
+            aria-live="polite"
+          >
+            {imageNoticeState !== 'neutral' ? (
+              <span
+                className="research-image-notice-fill"
+                style={{ width: `${imageUploadProgress}%` }}
+              />
+            ) : null}
+            <span className="research-image-notice-text">{imageNotice}</span>
+            {imageNoticeState === 'error' && failedImageUpload ? (
+              <button
+                className="research-image-retry"
+                type="button"
+                onClick={() =>
+                  void uploadResearchImage(failedImageUpload.file, failedImageUpload)
+                }
+              >
+                重试
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <div className={`research-editor-panes mode-${editorMode}`}>
           {editorMode !== 'preview' ? (
             <textarea
               ref={markdownRef}
+              className={imageDragActive ? 'image-drag-active' : ''}
               value={markdown}
               onChange={(event) => setMarkdown(event.target.value)}
+              onDragEnter={(event) => {
+                if (event.dataTransfer.types.includes('Files')) {
+                  event.preventDefault();
+                  setImageDragActive(true);
+                }
+              }}
+              onDragOver={(event) => {
+                if (event.dataTransfer.types.includes('Files')) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'copy';
+                }
+              }}
+              onDragLeave={() => setImageDragActive(false)}
+              onDrop={(event) => {
+                event.preventDefault();
+                setImageDragActive(false);
+                if (imageBusy || pendingImage !== null) return;
+                const file = [...event.dataTransfer.files].find((item) =>
+                  item.type.startsWith('image/'),
+                );
+                if (file) void uploadResearchImage(file);
+              }}
+              onPaste={(event) => {
+                if (imageBusy || pendingImage !== null) return;
+                const file = [...event.clipboardData.files].find((item) =>
+                  item.type.startsWith('image/'),
+                );
+                if (file) {
+                  event.preventDefault();
+                  void uploadResearchImage(file);
+                }
+              }}
               placeholder="# 研究主题\n\n在此输入或粘贴 Markdown 资料"
             />
           ) : null}
           {editorMode !== 'edit' ? (
-            <div className="research-markdown-preview">{previewLines}</div>
+            <div className="research-markdown-preview">
+              <ResearchMarkdownPreview markdown={markdown} />
+            </div>
           ) : null}
         </div>
       </div>
@@ -2067,8 +2482,6 @@ function SettingsView({ user }: { user: AdminUser }) {
     taskModels: {},
   });
   const [contentCenter, setContentCenter] = useState<ContentCenterConfig>({
-    source: 'minio',
-    path: 'tutor-flow',
     maxUploadBytes: 20 * 1024 * 1024,
     downloadExpiresIn: 300,
     cdnExpiresIn: 0,
@@ -2105,7 +2518,13 @@ function SettingsView({ user }: { user: AdminUser }) {
         }
         const content = value.items.find((item) => item.key === 'content_center')
           ?.value as ContentCenterConfig | undefined;
-        if (content) setContentCenter(content);
+        if (content) {
+          setContentCenter({
+            maxUploadBytes: content.maxUploadBytes,
+            downloadExpiresIn: content.downloadExpiresIn,
+            cdnExpiresIn: content.cdnExpiresIn,
+          });
+        }
       })
       .catch(() => setData(null));
   }, []);
@@ -2348,23 +2767,13 @@ function SettingsView({ user }: { user: AdminUser }) {
                   <div className="setting-row">
                     <span className="setting-key">内容中心</span>
                     <span className="small muted">
-                      令牌由服务端环境变量提供，以下参数保存后立即生效
+                      令牌由服务端环境变量提供，上传源使用内容中心默认配置，以下参数保存后立即生效
                     </span>
                   </div>
                   <fieldset
                     disabled={user.role !== 'SUPER_ADMIN'}
                     style={{ border: 0, padding: 0, margin: 0 }}
                   >
-                    <div className="setting-editor">
-                      <label htmlFor="content-path">内容中心路径</label>
-                      <input
-                        id="content-path"
-                        value={contentCenter.path}
-                        onChange={(event) =>
-                          setContentCenter({ ...contentCenter, path: event.target.value })
-                        }
-                      />
-                    </div>
                     <div className="setting-editor">
                       <label htmlFor="content-max-mb">图片大小上限（MiB）</label>
                       <input

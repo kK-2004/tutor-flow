@@ -80,6 +80,12 @@ export interface LlmRequest {
   promptVersion: string;
   systemPrompt: string;
   userPrompt: string;
+  /** 随用户提示词发送的图片，URL 必须是调用时换取的直链。 */
+  images?: Array<{
+    url: string;
+    mediaType: string;
+    detail: 'low' | 'high' | 'auto';
+  }>;
   maxTokens: number;
   /** 结构化输出的本地校验及供应商约束 */
   outputSchema?: import('zod').ZodType;

@@ -10,6 +10,10 @@ import {
   type SearchQuery,
   type SearchResultItem,
 } from './gateway-types.js';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+
+import { SocksProxyAgent } from 'socks-proxy-agent';
 
 /** Brave Web Search API 单条结果（仅映射需要的字段） */
 interface BraveWebResult {
@@ -32,16 +36,63 @@ export interface BraveSearchOptions {
   endpoint?: string;
   /** 可注入的 fetch 实现（默认全局 fetch） */
   fetchImpl?: typeof fetch;
+  /** 线上可选 SOCKS 代理地址；未配置时直接连接 */
+  proxyUrl?: string;
   /** 单次请求超时（毫秒） */
   timeoutMs?: number;
 }
 
 const DEFAULT_ENDPOINT = 'https://api.search.brave.com/res/v1/web/search';
 
+interface SearchHttpResponse {
+  body: string;
+  status: number;
+}
+
+function requestThroughProxy(
+  url: URL,
+  apiKey: string,
+  agent: SocksProxyAgent,
+  timeoutMs: number,
+): Promise<SearchHttpResponse> {
+  const requester = url.protocol === 'http:' ? httpRequest : httpsRequest;
+  return new Promise((resolve, reject) => {
+    const request = requester(
+      url,
+      {
+        agent,
+        headers: {
+          accept: 'application/json',
+          'x-subscription-token': apiKey,
+        },
+        method: 'GET',
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer | string) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        response.on('end', () => {
+          resolve({
+            body: Buffer.concat(chunks).toString('utf8'),
+            status: response.statusCode ?? 0,
+          });
+        });
+        response.on('error', reject);
+      },
+    );
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 /** 创建 Brave Search 网关 */
 export function createBraveSearchGateway(options: BraveSearchOptions): SearchGateway {
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
   const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  const proxyAgent = options.proxyUrl ? new SocksProxyAgent(options.proxyUrl) : null;
 
   return {
     async search(query: SearchQuery): Promise<SearchResultItem[]> {
@@ -49,14 +100,21 @@ export function createBraveSearchGateway(options: BraveSearchOptions): SearchGat
       url.searchParams.set('q', query.query);
       url.searchParams.set('count', String(Math.min(query.maxResults, 20)));
 
-      const response = await fetchImpl(url.toString(), {
-        method: 'GET',
-        headers: {
-          accept: 'application/json',
-          'x-subscription-token': options.apiKey,
-        },
-        signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
-      }).catch((error: unknown) => {
+      const response = await (
+        proxyAgent
+          ? requestThroughProxy(url, options.apiKey, proxyAgent, timeoutMs)
+          : fetchImpl(url.toString(), {
+              method: 'GET',
+              headers: {
+                accept: 'application/json',
+                'x-subscription-token': options.apiKey,
+              },
+              signal: AbortSignal.timeout(timeoutMs),
+            }).then(async (result) => ({
+              body: await result.text(),
+              status: result.status,
+            }))
+      ).catch((error: unknown) => {
         throw new GatewayError(
           `Brave Search 请求失败：${error instanceof Error ? error.message.slice(0, 120) : '未知错误'}`,
           { retryable: true },
@@ -69,7 +127,7 @@ export function createBraveSearchGateway(options: BraveSearchOptions): SearchGat
           status: 429,
         });
       }
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         // 4xx 其他错误（配额耗尽/鉴权失败等）不自动重试
         throw new GatewayError(`Brave Search 请求失败（${response.status}）`, {
           retryable: response.status >= 500,
@@ -77,7 +135,12 @@ export function createBraveSearchGateway(options: BraveSearchOptions): SearchGat
         });
       }
 
-      const data = (await response.json().catch(() => null)) as BraveResponse | null;
+      let data: BraveResponse | null = null;
+      try {
+        data = JSON.parse(response.body) as BraveResponse;
+      } catch {
+        data = null;
+      }
       const results = data?.web?.results ?? [];
       return results
         .filter(

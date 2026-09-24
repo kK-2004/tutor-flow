@@ -6,8 +6,13 @@
  * 审核门槛走统一校验模块（5.3）；草稿以修订一创建（5.4）。
  */
 import { createHash } from 'node:crypto';
-import { DEFAULT_XHS_PROMPT, XHS_OUTPUT_CONTRACT } from '@tutor-flow/domain';
-import { and, desc, eq } from 'drizzle-orm';
+import {
+  DEFAULT_XHS_PROMPT,
+  XHS_OUTPUT_CONTRACT,
+  formatResearchDocumentImage,
+  parseResearchDocumentImages,
+} from '@tutor-flow/domain';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 
 import {
   getSetting,
@@ -16,6 +21,7 @@ import {
   getActivePlatformPolicy,
   getRunWithJob,
   claimSources,
+  researchDocuments,
   type DbClient,
 } from '@tutor-flow/db';
 import { StepFailure, validateXhsContent, type StepHandler } from '@tutor-flow/workflow';
@@ -150,6 +156,19 @@ export function createGenerateCanonicalHandler(deps: ContentHandlersDeps): StepH
       throw new StepFailure('CONTENT', '缺少选中的内容方向');
     }
     const claimSupport = await loadClaimSupport(deps.db, run.id);
+    const selectedDocuments =
+      loaded.job.researchDocumentIds.length === 0
+        ? []
+        : await deps.db.db
+            .select({ markdown: researchDocuments.markdown })
+            .from(researchDocuments)
+            .where(inArray(researchDocuments.id, loaded.job.researchDocumentIds));
+    const documentImages = selectedDocuments.flatMap((document) =>
+      parseResearchDocumentImages(document.markdown),
+    );
+    const uniqueDocumentImages = [
+      ...new Map(documentImages.map((image) => [image.fileId, image])).values(),
+    ];
 
     // 事实编号映射
     const claimIdByIndex = new Map<number, string>();
@@ -165,6 +184,15 @@ export function createGenerateCanonicalHandler(deps: ContentHandlersDeps): StepH
         '',
         '已核验事实（撰写时只能引用这些事实，编号如下）：',
         ...claimSupport.map((claim, index) => `${index + 1}. ${claim.statement}`),
+        ...(uniqueDocumentImages.length > 0
+          ? [
+              '',
+              '研究资料中的图片已随本次请求附加，请结合图片内容理解资料：',
+              ...uniqueDocumentImages.map((image) =>
+                formatResearchDocumentImage(image.fileId, image.alt),
+              ),
+            ]
+          : []),
         '',
         '请基于以上事实撰写规范文章（Markdown），并在 usedClaims 中列出引用的事实编号。',
       ].join('\n'),

@@ -81,6 +81,7 @@ jobs:
           BOOTSTRAP_SUPER_ADMIN_USERNAME: kk
           BOOTSTRAP_SUPER_ADMIN_PASSWORD: ${{ secrets.BOOTSTRAP_SUPER_ADMIN_PASSWORD }}
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          BRAVE_PROXY_URL: socks5h://newapi-socks5-tunnel:1080
           CONTENT_CENTER_URL: https://file.ksite.xin
           KFILE_APP_TOKEN: ${{ secrets.KFILE_APP_TOKEN }}
           TUTOR_FLOW_BIND_ADDRESS: ${{ secrets.TUTOR_FLOW_BIND_ADDRESS }}
@@ -137,6 +138,7 @@ jobs:
             "$BOOTSTRAP_SUPER_ADMIN_USERNAME" \
             "$BOOTSTRAP_SUPER_ADMIN_PASSWORD" \
             "$BRAVE_API_KEY" \
+            "$BRAVE_PROXY_URL" \
             "$CONTENT_CENTER_URL" \
             "$KFILE_APP_TOKEN" \
             "$TUTOR_FLOW_BIND_ADDRESS" \
@@ -155,6 +157,7 @@ jobs:
             printf "BOOTSTRAP_SUPER_ADMIN_USERNAME='%s'\n" "$BOOTSTRAP_SUPER_ADMIN_USERNAME"
             printf "BOOTSTRAP_SUPER_ADMIN_PASSWORD='%s'\n" "$BOOTSTRAP_SUPER_ADMIN_PASSWORD"
             printf "BRAVE_API_KEY='%s'\n" "$BRAVE_API_KEY"
+            printf "BRAVE_PROXY_URL='%s'\n" "$BRAVE_PROXY_URL"
             printf "CONTENT_CENTER_URL='%s'\n" "$CONTENT_CENTER_URL"
             printf "KFILE_APP_TOKEN='%s'\n" "$KFILE_APP_TOKEN"
             printf "TUTOR_FLOW_BIND_ADDRESS='%s'\n" "$TUTOR_FLOW_BIND_ADDRESS"

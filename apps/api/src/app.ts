@@ -30,6 +30,8 @@ import { createMetrics, startSpan } from '@tutor-flow/observability';
 import { LLM_MODELS_UPDATED_CHANNEL } from '@tutor-flow/domain';
 import { Redis } from 'ioredis';
 
+import { ApiLlmRuntime } from './lib/llm-runtime.js';
+
 export interface BuildAppOptions {
   /** 缺省时从环境变量加载并创建数据库客户端（测试时可注入替代实现） */
   db?: DbClient;
@@ -53,6 +55,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<AppHandle
     });
   await db.ready;
   const engine = createWorkflowEngine(db);
+  const llmRuntime = new ApiLlmRuntime(db, resolveDatabasePath(env.SQLITE_PATH));
+  await llmRuntime.refresh();
 
   const app = Fastify({
     logger: { level: env.LOG_LEVEL },
@@ -239,13 +243,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<AppHandle
   registerAdminAuthRoutes(app, { db, env });
   registerRunRoutes(app, { db, engine, env });
   registerDraftRoutes(app, { db, env });
-  registerMediaRoutes(app, { db, env });
+  registerMediaRoutes(app, { db, env, llm: llmRuntime });
   registerSseRoutes(app, { db, env });
   registerOperationsRoutes(app, {
     db,
     env,
     secrets: new EnvSecretProvider(),
     publishLlmModelsUpdate: async () => {
+      await llmRuntime.refresh();
       llmModelsPublisher ??= new Redis(env.REDIS_URL, {
         lazyConnect: true,
         maxRetriesPerRequest: null,

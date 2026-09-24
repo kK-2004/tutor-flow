@@ -42,7 +42,7 @@ describe('内容中心媒体路由', () => {
         new Response(
           JSON.stringify({
             storageKey: 'tutor-flow/cover.png',
-            source: 'minio',
+            source: 'oss',
             putUrl: 'https://storage.example/put?signature=secret',
             expiresIn: 300,
             fileId: 42,
@@ -60,7 +60,7 @@ describe('内容中心媒体路由', () => {
     await db.close();
   });
 
-  it('校验图片后申请 MinIO 预签名地址', async () => {
+  it('校验图片后使用内容中心默认上传源申请预签名地址', async () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/media/uploads/init',
@@ -68,14 +68,17 @@ describe('内容中心媒体路由', () => {
       payload: { filename: 'cover.png', size: 123, contentType: 'image/png' },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json().source).toBe('minio');
+    expect(response.json().source).toBe('oss');
     const fetcher = vi.mocked(fetch);
     expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(fetcher.mock.calls[0]?.[1]?.body as string)).toMatchObject({
+    const uploadRequest = JSON.parse(
+      fetcher.mock.calls[0]?.[1]?.body as string,
+    ) as Record<string, unknown>;
+    expect(uploadRequest).toMatchObject({
       originalName: 'cover.png',
-      path: 'tutor-flow',
-      source: 'minio',
+      path: '',
     });
+    expect(uploadRequest).not.toHaveProperty('source');
   });
 
   it('拒绝不支持的格式和未认证请求', async () => {
@@ -114,7 +117,7 @@ describe('内容中心媒体路由', () => {
       method: 'POST',
       url: '/api/v1/media/uploads/complete',
       headers: { authorization: `Bearer ${token}` },
-      payload: { storageKey: 'tutor-flow/cover.png', source: 'minio' },
+      payload: { storageKey: 'tutor-flow/cover.png', source: 'oss' },
     });
     expect(response.statusCode).toBe(200);
     expect(response.json().media).toEqual({
@@ -130,7 +133,6 @@ describe('内容中心媒体路由', () => {
       updatedBy: 'test',
       value: {
         source: 'minio',
-        path: 'team/images',
         maxUploadBytes: 1024,
         downloadExpiresIn: 600,
         cdnExpiresIn: 120,
@@ -142,7 +144,7 @@ describe('内容中心媒体路由', () => {
         new Response(
           JSON.stringify({
             url: 'https://cdn.example/cover.png',
-            expiresIn: 120,
+            expiresIn: 600,
             permanent: false,
             contentType: 'image/png',
           }),
@@ -158,7 +160,7 @@ describe('内容中心媒体路由', () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0]?.[1]?.body as string)).toEqual({
       fileId: 42,
-      expiresIn: 120,
+      expiresIn: 600,
     });
   });
 });

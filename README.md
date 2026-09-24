@@ -23,7 +23,7 @@ packages/
 根目录 Compose 使用一个 `app` 容器运行管理台、API 和 Worker，启动业务进程前先执行数据库迁移。Redis 与内容中心继续使用已部署的外部服务，不会创建 Redis 容器。
 
 首次启动前，准备 `.env`。宿主机 Redis `localhost:6379` 已对应配置为 `redis://host.docker.internal:6379`；若 Redis 在其他服务器，则将 `REDIS_URL` 改为容器网络可达的地址。
-检索需要在 `.env` 配置 `BRAVE_API_KEY`。模型 Provider、API Key、Base URL、API 模式和模型 ID 在管理台“系统设置”中配置；模型密钥会加密保存在数据库旁的本地密钥文件中。完成 Provider 与默认模型配置后即可执行内容生成。
+检索需要在 `.env` 配置 `BRAVE_API_KEY`。本地默认直接连接 Brave；线上部署通过 `BRAVE_PROXY_URL=socks5h://newapi-socks5-tunnel:1080` 使用 `common-net` 中的 SOCKS5 代理。模型 Provider、API Key、Base URL、API 模式和模型 ID 在管理台“系统设置”中配置；模型密钥会加密保存在数据库旁的本地密钥文件中。完成 Provider 与默认模型配置后即可执行内容生成。
 
 ```bash
 # 准备环境变量并配置外部 Redis 地址
@@ -83,7 +83,7 @@ pnpm dev:worker
 pnpm dev:console
 ```
 
-宿主机运行 API 和 Worker 时，按宿主机网络配置 `REDIS_URL`。内容中心的应用令牌、MinIO 数据源与浏览器直传要求见 [接入说明](docs/content-center.md)。
+宿主机运行 API 和 Worker 时，按宿主机网络配置 `REDIS_URL`。内容中心的应用令牌、默认上传源与浏览器直传要求见 [接入说明](docs/content-center.md)。
 GitHub Actions 生产部署不再需要模型 Provider 的 GitHub Secrets；部署后在管理台系统设置中录入 Provider 与模型。请将数据库文件旁自动生成的加密密钥文件与数据库一起备份，并限制其文件访问权限。
 
 ## 规范约束

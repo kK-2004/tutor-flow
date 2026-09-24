@@ -23,4 +23,27 @@ describe('管理台界面契约', () => {
     expect(styles).toContain('@media (max-width: 720px)');
     expect(styles).toContain(':focus-visible');
   });
+
+  it('研究资料使用标准 Markdown 预览且不显示列表按钮', async () => {
+    const source = await readFile(path.join(root, 'console-app.tsx'), 'utf8');
+    expect(source).toContain("from 'react-markdown'");
+    expect(source).toContain('<ResearchMarkdownPreview markdown={markdown} />');
+    expect(source).not.toContain('>列表</button>');
+  });
+
+  it('图片直传显示上传进度并在失败时切换红色提示', async () => {
+    const source = await readFile(path.join(root, 'console-app.tsx'), 'utf8');
+    const styles = await readFile(path.join(root, 'styles.css'), 'utf8');
+    expect(source).toContain('request.upload.onprogress');
+    expect(source).toContain('setImageUploadProgress');
+    expect(source).toContain('initializationProgressTimer');
+    expect(source).toContain('uploadProgressPhases.initializingEnd');
+    expect(source).toContain('uploadProgressPhases.uploadingEnd');
+    expect(source).toContain('is-${imageNoticeState}');
+    expect(source).toContain('failedImageUpload.file, failedImageUpload');
+    expect(source).toContain('>\n                重试\n              </button>');
+    expect(styles).toContain('.research-image-notice-fill');
+    expect(styles).toContain('.research-image-notice.is-error');
+    expect(styles).toContain('.research-image-retry');
+  });
 });

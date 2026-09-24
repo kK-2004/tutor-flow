@@ -5,7 +5,12 @@ import {
   DEFAULT_CONTENT_CENTER_SETTINGS,
   parseContentCenterSettings,
 } from '@tutor-flow/domain';
-import { ContentCenterError, createContentCenterClient } from '@tutor-flow/integrations';
+import {
+  ContentCenterError,
+  createContentCenterClient,
+  GatewayError,
+  type LlmGateway,
+} from '@tutor-flow/integrations';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -20,9 +25,9 @@ const imageTypes = new Map([
 
 export function registerMediaRoutes(
   app: FastifyInstance,
-  options: { db: DbClient; env: ApiEnv },
+  options: { db: DbClient; env: ApiEnv; llm: LlmGateway },
 ): void {
-  const { db, env } = options;
+  const { db, env, llm } = options;
   const authenticate = requireAuthenticated(env, db);
   const secrets = new EnvSecretProvider();
 
@@ -85,8 +90,7 @@ export function registerMediaRoutes(
           await api.initUpload(filename, {
             size: input.size,
             contentType: input.contentType,
-            source: config.source,
-            path: config.path,
+            path: '',
           }),
         );
       } catch (error) {
@@ -109,7 +113,11 @@ export function registerMediaRoutes(
         z
           .object({
             storageKey: z.string().min(1).max(1024),
-            source: z.literal('minio'),
+            source: z
+              .string()
+              .min(1)
+              .max(50)
+              .regex(/^[A-Za-z0-9_-]+$/),
           })
           .strict(),
         request.body,
@@ -162,12 +170,63 @@ export function registerMediaRoutes(
       if (api === null) return reply.code(503).send({ error: '内容中心未配置' });
       const config = await settings();
       try {
-        return reply.send(await api.getCdnLink(parsed.data, config.cdnExpiresIn));
+        const link = await api.getDownloadLink(parsed.data, config.downloadExpiresIn);
+        return reply.send({ ...link, url: await api.resolveFinalUrl(link.url) });
       } catch (error) {
         if (error instanceof ContentCenterError) {
           return reply.code(502).send({ error: error.message });
         }
         throw error;
+      }
+    },
+  );
+
+  app.post(
+    '/api/v1/research-library/images/extract-text',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      if (!isOperator(request.actor)) {
+        return reply.code(403).send({ error: '仅运营人员可提取图片文字' });
+      }
+      const input = parseBody(
+        z.object({ fileId: z.number().int().positive() }).strict(),
+        request.body,
+      );
+      const api = await client();
+      if (api === null) return reply.code(503).send({ error: '内容中心未配置' });
+      try {
+        const config = await settings();
+        const [image, download] = await Promise.all([
+          api.getCdnLink(input.fileId, config.cdnExpiresIn),
+          api.getDownloadLink(input.fileId, config.downloadExpiresIn),
+        ]);
+        const directUrl = await api.resolveFinalUrl(download.url);
+        const result = await llm.complete({
+          task: 'image_text_extraction',
+          promptVersion: 'image-text-extraction@1',
+          systemPrompt: [
+            '你是图片文字提取助手。',
+            '准确提取图片中可见的文字，保持原有阅读顺序和自然分段。',
+            '只返回提取出的文字，不要描述图片，不要添加解释或 Markdown 围栏。',
+          ].join('\n'),
+          userPrompt: '请提取这张图片中的全部可见文字。',
+          images: [
+            {
+              url: directUrl,
+              mediaType: image.contentType,
+              detail: 'low',
+            },
+          ],
+          maxTokens: 4096,
+        });
+        return reply.send({ text: result.text.trim() });
+      } catch (error) {
+        if (error instanceof ContentCenterError || error instanceof GatewayError) {
+          return reply.code(502).send({ error: error.message });
+        }
+        return reply.code(400).send({
+          error: error instanceof Error ? error.message : '图片文字提取失败',
+        });
       }
     },
   );

@@ -17,8 +17,11 @@ import {
 import {
   createAiSdkLlmGateway,
   createBraveSearchGateway,
+  createContentCenterClient,
+  ContentCenterError,
   GatewayError,
   type LlmGateway,
+  type LlmRequest,
   type SearchGateway,
 } from '@tutor-flow/integrations';
 import {
@@ -28,6 +31,10 @@ import {
 } from '@tutor-flow/workflow';
 import {
   LLM_MODELS_UPDATED_CHANNEL,
+  DEFAULT_CONTENT_CENTER_SETTINGS,
+  parseContentCenterSettings,
+  parseResearchDocumentImages,
+  redactResearchDocumentImageUrls,
   type LlmModelsConfig,
   type ModelSelection,
 } from '@tutor-flow/domain';
@@ -59,6 +66,63 @@ const engine = createWorkflowEngine(db);
 
 const secrets = new EnvSecretProvider();
 let configuredSearch: SearchGateway | null = null;
+let contentCenter: ReturnType<typeof createContentCenterClient> | null = null;
+
+async function attachResearchDocumentImages(request: LlmRequest): Promise<LlmRequest> {
+  const references = parseResearchDocumentImages(request.userPrompt);
+  if (references.length === 0) return request;
+  if (env.CONTENT_CENTER_URL === undefined) {
+    throw new GatewayError('研究资料包含图片，但内容中心未配置', {
+      retryable: false,
+    });
+  }
+  if (contentCenter === null) {
+    const token = await secrets.resolveSecret(env.CONTENT_CENTER_TOKEN_REF);
+    contentCenter = createContentCenterClient({
+      baseUrl: env.CONTENT_CENTER_URL,
+      appToken: token,
+    });
+  }
+  const savedSettings = await getSetting(db.db, 'content_center');
+  const settings =
+    savedSettings === null
+      ? DEFAULT_CONTENT_CENTER_SETTINGS
+      : parseContentCenterSettings(savedSettings.value);
+  try {
+    const links = await Promise.all(
+      references.map(async (image) => {
+        const [metadata, download] = await Promise.all([
+          contentCenter!.getCdnLink(image.fileId, settings.cdnExpiresIn),
+          contentCenter!.getDownloadLink(image.fileId, settings.downloadExpiresIn),
+        ]);
+        return {
+          ...metadata,
+          url: await contentCenter!.resolveFinalUrl(download.url),
+        };
+      }),
+    );
+    return {
+      ...request,
+      userPrompt: redactResearchDocumentImageUrls(request.userPrompt),
+      images: [
+        ...(request.images ?? []),
+        ...links.map((image) => ({
+          url: image.url,
+          mediaType: image.contentType,
+          detail: 'low' as const,
+        })),
+      ],
+    };
+  } catch (error) {
+    if (error instanceof ContentCenterError) {
+      throw new GatewayError(`获取研究资料图片直链失败：${error.message}`, {
+        retryable: error.status < 0 || error.status >= 500,
+        status: error.status > 0 ? error.status : undefined,
+      });
+    }
+    throw error;
+  }
+}
 
 interface LlmRuntimeCache {
   config: LlmModelsConfig | null;
@@ -148,6 +212,7 @@ function refreshLlmRuntimeCache(): Promise<void> {
 const llm: LlmGateway = {
   async complete(request) {
     try {
+      const preparedRequest = await attachResearchDocumentImages(request);
       const { config } = llmRuntimeCache;
       const taskSelection =
         config?.taskModels[request.task as keyof LlmModelsConfig['taskModels']];
@@ -181,7 +246,7 @@ const llm: LlmGateway = {
         }
         return await llmRuntimeCache.gateways
           .get(llmConfigKey(selection))!
-          .complete(request);
+          .complete(preparedRequest);
       }
       throw new StepFailure('VALIDATION', '请先在系统设置中配置模型 Provider 和默认模型');
     } catch (error) {
@@ -207,6 +272,7 @@ const search: SearchGateway = {
       configuredSearch = createBraveSearchGateway({
         apiKey,
         endpoint: env.SEARCH_BRAVE_ENDPOINT,
+        proxyUrl: env.BRAVE_PROXY_URL,
       });
     }
     return configuredSearch.search(query);

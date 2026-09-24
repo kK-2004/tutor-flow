@@ -47,7 +47,26 @@ export function createAiSdkLlmGateway(options: AiSdkLlmOptions): LlmGateway {
             ? wrapLanguageModel({ model: baseModel, middleware: extractJsonMiddleware() })
             : baseModel,
           system: request.systemPrompt,
-          prompt: request.userPrompt,
+          ...(request.images && request.images.length > 0
+            ? {
+                messages: [
+                  {
+                    role: 'user' as const,
+                    content: [
+                      { type: 'text' as const, text: request.userPrompt },
+                      ...request.images.map((image) => ({
+                        type: 'file' as const,
+                        data: new URL(image.url),
+                        mediaType: image.mediaType,
+                        providerOptions: {
+                          openai: { imageDetail: image.detail },
+                        },
+                      })),
+                    ],
+                  },
+                ],
+              }
+            : { prompt: request.userPrompt }),
           maxOutputTokens: request.maxTokens,
           output: request.outputSchema
             ? Output.object({ schema: request.outputSchema, name: request.outputName })

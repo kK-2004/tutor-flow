@@ -25,6 +25,7 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 
 import { WorkflowDetailView } from './workflow-detail.js';
+import { LoadingState } from './loading-state.js';
 import { formatTokenCount } from './number-format.js';
 import { ToastNotice } from './toast.js';
 
@@ -630,7 +631,17 @@ function activityLabel(action: string, payload: unknown): string {
   );
 }
 
-function OverviewView({ data, onRefresh }: { data?: ApiState; onRefresh: () => void }) {
+function OverviewView({
+  data,
+  loading,
+  error,
+  onRefresh,
+}: {
+  data?: ApiState;
+  loading: boolean;
+  error: string;
+  onRefresh: () => void;
+}) {
   const metrics = data?.metrics ?? {
     runningRuns: 0,
     pendingDrafts: 0,
@@ -655,61 +666,69 @@ function OverviewView({ data, onRefresh }: { data?: ApiState; onRefresh: () => v
           </button>
         }
       />
-      <div className="metrics">
-        {cards.map(([label, value, note]) => (
-          <div className="metric" key={String(label)}>
-            <div className="metric-label">{label}</div>
-            <div className="metric-value">
-              {label === '模型 Token'
-                ? formatTokenCount(Number(value))
-                : Number(value).toLocaleString('zh-CN')}
-            </div>
-            <div className="metric-note">{note}</div>
+      {loading ? <LoadingState label="正在加载概览数据…" /> : null}
+      {!loading && error ? <div className="card empty">{error}</div> : null}
+      {!loading && !error ? (
+        <>
+          <div className="metrics">
+            {cards.map(([label, value, note]) => (
+              <div className="metric" key={String(label)}>
+                <div className="metric-label">{label}</div>
+                <div className="metric-value">
+                  {label === '模型 Token'
+                    ? formatTokenCount(Number(value))
+                    : Number(value).toLocaleString('zh-CN')}
+                </div>
+                <div className="metric-note">{note}</div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      <div className="grid-two">
-        <section className="card">
-          <div className="card-heading">
-            <h2>最近活动</h2>
-            <span>任务执行进展</span>
-          </div>
-          <div className="card-body">
-            {data?.recentActivity?.length ? (
-              <div className="timeline">
-                {data.recentActivity.slice(0, 5).map((item) => (
-                  <div className="timeline-item" key={item.id}>
-                    <strong>{activityLabel(item.action, item.payload)}</strong>
-                    <span>
-                      {formatTime(item.occurredAt)} · {item.resourceId}
-                    </span>
+          <div className="grid-two">
+            <section className="card">
+              <div className="card-heading">
+                <h2>最近活动</h2>
+                <span>任务执行进展</span>
+              </div>
+              <div className="card-body">
+                {data?.recentActivity?.length ? (
+                  <div className="timeline">
+                    {data.recentActivity.slice(0, 5).map((item) => (
+                      <div className="timeline-item" key={item.id}>
+                        <strong>{activityLabel(item.action, item.payload)}</strong>
+                        <span>
+                          {formatTime(item.occurredAt)} · {item.resourceId}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                ) : (
+                  <div className="empty">
+                    <Icon name="clock" />
+                    暂无活动数据
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="empty">
-                <Icon name="clock" />
-                暂无活动数据
+            </section>
+            <section className="card">
+              <div className="card-heading">
+                <h2>运行提示</h2>
+                <span>安全停点</span>
               </div>
-            )}
+              <div className="card-body">
+                <div className="alert">
+                  <Icon name="info" />
+                  <span>
+                    生成小红书风格标题、正文和标签，在草稿箱打磨审核后复制使用。
+                  </span>
+                </div>
+                <p className="muted small">
+                  研究正文只在研究步骤内即时使用，数据库保留来源元数据、事实关系和审计链。
+                </p>
+              </div>
+            </section>
           </div>
-        </section>
-        <section className="card">
-          <div className="card-heading">
-            <h2>运行提示</h2>
-            <span>安全停点</span>
-          </div>
-          <div className="card-body">
-            <div className="alert">
-              <Icon name="info" />
-              <span>生成小红书风格标题、正文和标签，在草稿箱打磨审核后复制使用。</span>
-            </div>
-            <p className="muted small">
-              研究正文只在研究步骤内即时使用，数据库保留来源元数据、事实关系和审计链。
-            </p>
-          </div>
-        </section>
-      </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -725,8 +744,10 @@ function WorkflowsView({
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
   const [removing, setRemoving] = useState<string | null>(null);
   const load = useCallback(() => {
+    setLoading(true);
     void api<{ items: RunItem[] }>('/api/v1/runs')
       .then((value) => {
         setItems(value.items);
@@ -734,7 +755,8 @@ function WorkflowsView({
       })
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : '运行任务加载失败'),
-      );
+      )
+      .finally(() => setLoading(false));
   }, []);
   useEffect(() => {
     load();
@@ -811,55 +833,58 @@ function WorkflowsView({
       </div>
       <ToastNotice message={error} />
       <div className="run-list">
-        {filtered.map((item) => (
-          <div
-            className="run-row run-row-clickable"
-            key={item.runId}
-            role="link"
-            tabIndex={0}
-            aria-label={`打开工作流：${item.topic}`}
-            onClick={() => onOpen(item.runId)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                onOpen(item.runId);
-              }
-            }}
-          >
-            <span className="run-topic">
-              <strong title={item.topic}>{item.topic}</strong>
-              <span>
-                {item.runId} · {item.platform}
-              </span>
-            </span>
-            <Status value={item.status} />
-            <span className="muted">
-              {item.directionMode === 'manual' ? '人工选向' : '自动选向'}
-            </span>
-            <span className="muted">{formatTime(item.updatedAt)}</span>
-            <span className="run-actions">
-              <button
-                className="button compact danger"
-                disabled={
-                  !deletableStatuses.includes(item.status) || removing === item.runId
-                }
-                title={
-                  deletableStatuses.includes(item.status)
-                    ? '删除工作流'
-                    : '运行中的工作流不能删除'
-                }
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void remove(item);
+        {loading ? <LoadingState label="正在加载工作流…" /> : null}
+        {!loading
+          ? filtered.map((item) => (
+              <div
+                className="run-row run-row-clickable"
+                key={item.runId}
+                role="link"
+                tabIndex={0}
+                aria-label={`打开工作流：${item.topic}`}
+                onClick={() => onOpen(item.runId)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onOpen(item.runId);
+                  }
                 }}
-                onKeyDown={(event) => event.stopPropagation()}
               >
-                {removing === item.runId ? '删除中…' : '删除'}
-              </button>
-            </span>
-          </div>
-        ))}
-        {filtered.length === 0 ? (
+                <span className="run-topic">
+                  <strong title={item.topic}>{item.topic}</strong>
+                  <span>
+                    {item.runId} · {item.platform}
+                  </span>
+                </span>
+                <Status value={item.status} />
+                <span className="muted">
+                  {item.directionMode === 'manual' ? '人工选向' : '自动选向'}
+                </span>
+                <span className="muted">{formatTime(item.updatedAt)}</span>
+                <span className="run-actions">
+                  <button
+                    className="button compact danger"
+                    disabled={
+                      !deletableStatuses.includes(item.status) || removing === item.runId
+                    }
+                    title={
+                      deletableStatuses.includes(item.status)
+                        ? '删除工作流'
+                        : '运行中的工作流不能删除'
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void remove(item);
+                    }}
+                    onKeyDown={(event) => event.stopPropagation()}
+                  >
+                    {removing === item.runId ? '删除中…' : '删除'}
+                  </button>
+                </span>
+              </div>
+            ))
+          : null}
+        {!loading && !error && filtered.length === 0 ? (
           <div className="card empty">
             <Icon name="workflow" />
             暂无符合条件的工作流
@@ -874,8 +899,10 @@ function DraftsView({ onOpen }: { onOpen: (id: string) => void }) {
   const [items, setItems] = useState<DraftItem[]>([]);
   const [status, setStatus] = useState('PENDING_REVIEW');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
   const [removing, setRemoving] = useState<string | null>(null);
   const load = useCallback(() => {
+    setLoading(true);
     void api<{ items: DraftItem[] }>(`/api/v1/drafts?status=${status}`)
       .then((value) => {
         setItems(value.items);
@@ -884,7 +911,8 @@ function DraftsView({ onOpen }: { onOpen: (id: string) => void }) {
       .catch((reason: unknown) => {
         setItems([]);
         setError(reason instanceof Error ? reason.message : '草稿列表加载失败');
-      });
+      })
+      .finally(() => setLoading(false));
   }, [status]);
   useEffect(() => {
     load();
@@ -931,58 +959,61 @@ function DraftsView({ onOpen }: { onOpen: (id: string) => void }) {
       <ToastNotice message={error} />
       <div className="card">
         <div className="table-wrap draft-table-wrap">
-          <table className="draft-table">
-            <thead>
-              <tr>
-                <th>标题</th>
-                <th>主题</th>
-                <th>修订</th>
-                <th>状态</th>
-                <th>更新时间</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={item.runId}>
-                  <td>
-                    <strong className="truncate-text" title={item.title}>
-                      {item.title}
-                    </strong>
-                  </td>
-                  <td>
-                    <span className="truncate-text" title={item.topic}>
-                      {item.topic}
-                    </span>
-                  </td>
-                  <td>v{item.revision}</td>
-                  <td>
-                    <Status value={item.status} />
-                  </td>
-                  <td>{formatTime(item.updatedAt)}</td>
-                  <td>
-                    <span className="run-actions">
-                      <button
-                        className="button compact"
-                        onClick={() => onOpen(item.runId)}
-                      >
-                        <Icon name="eye" />
-                        打开
-                      </button>
-                      <button
-                        className="button compact danger"
-                        disabled={removing === item.runId}
-                        onClick={() => void remove(item)}
-                      >
-                        {removing === item.runId ? '删除中…' : '删除'}
-                      </button>
-                    </span>
-                  </td>
+          {loading ? <LoadingState label="正在加载草稿…" /> : null}
+          {!loading ? (
+            <table className="draft-table">
+              <thead>
+                <tr>
+                  <th>标题</th>
+                  <th>主题</th>
+                  <th>修订</th>
+                  <th>状态</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          {items.length === 0 ? (
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr key={item.runId}>
+                    <td>
+                      <strong className="truncate-text" title={item.title}>
+                        {item.title}
+                      </strong>
+                    </td>
+                    <td>
+                      <span className="truncate-text" title={item.topic}>
+                        {item.topic}
+                      </span>
+                    </td>
+                    <td>v{item.revision}</td>
+                    <td>
+                      <Status value={item.status} />
+                    </td>
+                    <td>{formatTime(item.updatedAt)}</td>
+                    <td>
+                      <span className="run-actions">
+                        <button
+                          className="button compact"
+                          onClick={() => onOpen(item.runId)}
+                        >
+                          <Icon name="eye" />
+                          打开
+                        </button>
+                        <button
+                          className="button compact danger"
+                          disabled={removing === item.runId}
+                          onClick={() => void remove(item)}
+                        >
+                          {removing === item.runId ? '删除中…' : '删除'}
+                        </button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+          {!loading && !error && items.length === 0 ? (
             <div className="empty">
               <Icon name="draft" />
               暂无草稿
@@ -999,7 +1030,9 @@ function DraftEditorView({ id, onBack }: { id: string; onBack: () => void }) {
   const [state, setState] = useState('');
   const [error, setError] = useState('');
   const [dirty, setDirty] = useState(false);
+  const [loading, setLoading] = useState(true);
   const load = useCallback(() => {
+    setLoading(true);
     void api<DraftDetails>(`/api/v1/drafts/${id}`)
       .then((value) => {
         setDraft(value);
@@ -1007,7 +1040,8 @@ function DraftEditorView({ id, onBack }: { id: string; onBack: () => void }) {
       })
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : '草稿加载失败'),
-      );
+      )
+      .finally(() => setLoading(false));
   }, [id]);
   useEffect(() => {
     load();
@@ -1067,7 +1101,11 @@ function DraftEditorView({ id, onBack }: { id: string; onBack: () => void }) {
           <Icon name="back" />
           返回草稿箱
         </button>
-        <div className="card empty">{error || '正在加载草稿…'}</div>
+        {loading ? (
+          <LoadingState label="正在加载草稿…" />
+        ) : (
+          <div className="card empty">{error || '未找到草稿'}</div>
+        )}
       </div>
     );
   return (
@@ -1077,6 +1115,9 @@ function DraftEditorView({ id, onBack }: { id: string; onBack: () => void }) {
         description={`${draft.runId} · 当前修订 v${draft.revision}`}
         action={
           <div className="actions">
+            {loading ? (
+              <LoadingState className="loading-state-inline" label="同步中…" />
+            ) : null}
             <button className="button" onClick={onBack}>
               <Icon name="back" />
               返回
@@ -1190,6 +1231,8 @@ function ResearchView() {
     documents: [],
     folders: [],
   });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [selectionMode, setSelectionMode] = useState(false);
@@ -1215,10 +1258,18 @@ function ResearchView() {
   const markdownRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const codeMenuRef = useRef<HTMLDivElement>(null);
-  const refresh = () =>
-    void api<typeof library>('/api/v1/research-library')
-      .then(setLibrary)
-      .catch(() => undefined);
+  const refresh = () => {
+    setLoading(true);
+    return void api<typeof library>('/api/v1/research-library')
+      .then((value) => {
+        setLibrary(value);
+        setLoadError('');
+      })
+      .catch((reason: unknown) =>
+        setLoadError(reason instanceof Error ? reason.message : '研究资料加载失败'),
+      )
+      .finally(() => setLoading(false));
+  };
   useEffect(refresh, []);
   useEffect(() => {
     if (!codeMenuOpen) return;
@@ -1746,87 +1797,99 @@ function ResearchView() {
             )}
           </div>
           <div className="research-grid">
-            {(!activeFolderId || search.trim()) &&
-              visibleFolders.map((folder) => (
-                <article
-                  className="research-card research-folder-card"
-                  key={folder.id}
-                  onClick={() => {
-                    setActiveFolderId(folder.id);
-                    setSelected([]);
-                  }}
-                >
-                  <div className="research-folder-actions">
-                    <button
-                      aria-label="重命名文件夹"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        renameFolder(folder);
-                      }}
-                    >
-                      ✎
-                    </button>
-                    <button
-                      aria-label="删除文件夹"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        removeFolder(folder);
-                      }}
-                    >
-                      ×
-                    </button>
-                  </div>
-                  <Icon name="folder" className="research-folder-icon" />
-                  <h3>{folder.name}</h3>
-                  <p>{docsInFolder(folder.id)} 篇资料</p>
-                </article>
-              ))}
-            {visibleDocs.map((doc) => (
-              <article
-                className={`research-card ${selected.includes(doc.id) ? 'selected' : ''}`}
-                key={doc.id}
-                onClick={() =>
-                  selectionMode
-                    ? setSelected((ids) =>
-                        ids.includes(doc.id)
-                          ? ids.filter((id) => id !== doc.id)
-                          : [...ids, doc.id],
-                      )
-                    : openEditor(doc)
-                }
-              >
-                {selectionMode ? (
-                  <input
-                    className="research-checkbox"
-                    aria-label={`选择${doc.title}`}
-                    type="checkbox"
-                    checked={selected.includes(doc.id)}
-                    onChange={() => undefined}
-                  />
-                ) : null}
-                <h3>{doc.title}</h3>
-                <p>
-                  {doc.markdown
-                    .replace(/[#>*`|\-\[\]]/g, ' ')
-                    .replace(/\s+/g, ' ')
-                    .trim() || '（空白）'}
-                </p>
-                <div className="research-card-meta">
-                  <span>
-                    {library.folders.find((folder) => folder.id === doc.folderId)?.name ??
-                      '未分类'}
-                  </span>
-                  <span>{doc.updatedAt ? formatTime(doc.updatedAt) : ''}</span>
-                </div>
-              </article>
-            ))}
-            {search.trim() && visibleFolders.length === 0 && visibleDocs.length === 0 ? (
-              <div className="empty research-empty">没有找到匹配的文件夹或资料。</div>
+            {loading ? <LoadingState label="正在加载研究资料…" /> : null}
+            {!loading && loadError ? (
+              <div className="empty research-empty">{loadError}</div>
             ) : null}
-            {!search.trim() && childFolders.length === 0 && visibleDocs.length === 0 ? (
-              <div className="empty research-empty">
-                这里还没有资料，点击“新建资料”开始写作。
-              </div>
+            {!loading && !loadError ? (
+              <>
+                {(!activeFolderId || search.trim()) &&
+                  visibleFolders.map((folder) => (
+                    <article
+                      className="research-card research-folder-card"
+                      key={folder.id}
+                      onClick={() => {
+                        setActiveFolderId(folder.id);
+                        setSelected([]);
+                      }}
+                    >
+                      <div className="research-folder-actions">
+                        <button
+                          aria-label="重命名文件夹"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            renameFolder(folder);
+                          }}
+                        >
+                          ✎
+                        </button>
+                        <button
+                          aria-label="删除文件夹"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeFolder(folder);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <Icon name="folder" className="research-folder-icon" />
+                      <h3>{folder.name}</h3>
+                      <p>{docsInFolder(folder.id)} 篇资料</p>
+                    </article>
+                  ))}
+                {visibleDocs.map((doc) => (
+                  <article
+                    className={`research-card ${selected.includes(doc.id) ? 'selected' : ''}`}
+                    key={doc.id}
+                    onClick={() =>
+                      selectionMode
+                        ? setSelected((ids) =>
+                            ids.includes(doc.id)
+                              ? ids.filter((id) => id !== doc.id)
+                              : [...ids, doc.id],
+                          )
+                        : openEditor(doc)
+                    }
+                  >
+                    {selectionMode ? (
+                      <input
+                        className="research-checkbox"
+                        aria-label={`选择${doc.title}`}
+                        type="checkbox"
+                        checked={selected.includes(doc.id)}
+                        onChange={() => undefined}
+                      />
+                    ) : null}
+                    <h3>{doc.title}</h3>
+                    <p>
+                      {doc.markdown
+                        .replace(/[#>*`|\-\[\]]/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim() || '（空白）'}
+                    </p>
+                    <div className="research-card-meta">
+                      <span>
+                        {library.folders.find((folder) => folder.id === doc.folderId)
+                          ?.name ?? '未分类'}
+                      </span>
+                      <span>{doc.updatedAt ? formatTime(doc.updatedAt) : ''}</span>
+                    </div>
+                  </article>
+                ))}
+                {search.trim() &&
+                visibleFolders.length === 0 &&
+                visibleDocs.length === 0 ? (
+                  <div className="empty research-empty">没有找到匹配的文件夹或资料。</div>
+                ) : null}
+                {!search.trim() &&
+                childFolders.length === 0 &&
+                visibleDocs.length === 0 ? (
+                  <div className="empty research-empty">
+                    这里还没有资料，点击“新建资料”开始写作。
+                  </div>
+                ) : null}
+              </>
             ) : null}
           </div>
         </div>
@@ -2457,6 +2520,8 @@ function SettingsView({ user }: { user: AdminUser }) {
     tone: 'danger' | 'info' | 'success';
   };
   const [data, setData] = useState<SettingsData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [saving, setSaving] = useState('');
   const [contentPrompts, setContentPrompts] = useState<ContentPromptsConfig>(() =>
     contentPromptsFromSettings(),
@@ -2471,6 +2536,8 @@ function SettingsView({ user }: { user: AdminUser }) {
   const [admins, setAdmins] = useState<
     Array<AdminUser & { createdAt: string; updatedAt: string }>
   >([]);
+  const [adminsLoading, setAdminsLoading] = useState(user.role === 'SUPER_ADMIN');
+  const [adminsError, setAdminsError] = useState('');
   const [resetTarget, setResetTarget] = useState<AdminUser | null>(null);
   const [resetMode, setResetMode] = useState<'random' | 'specified'>('random');
   const [resetPassword, setResetPassword] = useState('');
@@ -2487,9 +2554,11 @@ function SettingsView({ user }: { user: AdminUser }) {
     cdnExpiresIn: 0,
   });
   useEffect(() => {
+    setLoading(true);
     void api<SettingsData>('/api/v1/settings')
       .then((value) => {
         setData(value);
+        setLoadError('');
         const prompts = value.items.find((item) => item.key === 'content_prompts')
           ?.value as ContentPromptsConfig | undefined;
         const legacyPrompt = value.items.find((item) => item.key === 'xiaohongshu_prompt')
@@ -2526,15 +2595,27 @@ function SettingsView({ user }: { user: AdminUser }) {
           });
         }
       })
-      .catch(() => setData(null));
+      .catch((reason: unknown) => {
+        setData(null);
+        setLoadError(reason instanceof Error ? reason.message : '设置加载失败');
+      })
+      .finally(() => setLoading(false));
   }, []);
   const loadAdmins = useCallback(() => {
     if (user.role !== 'SUPER_ADMIN') return;
+    setAdminsLoading(true);
     void api<{ items: Array<AdminUser & { createdAt: string; updatedAt: string }> }>(
       '/api/v1/admin/users',
     )
-      .then((value) => setAdmins(value.items))
-      .catch(() => setAdmins([]));
+      .then((value) => {
+        setAdmins(value.items);
+        setAdminsError('');
+      })
+      .catch((reason: unknown) => {
+        setAdmins([]);
+        setAdminsError(reason instanceof Error ? reason.message : '管理员账号加载失败');
+      })
+      .finally(() => setAdminsLoading(false));
   }, [user.role]);
   useEffect(() => loadAdmins(), [loadAdmins]);
   const changeOwnPassword = () => {
@@ -2678,6 +2759,28 @@ function SettingsView({ user }: { user: AdminUser }) {
     | undefined;
   const budget = setting('search_budget')?.value as
     { maxQueries?: number; maxResultsPerQuery?: number; maxFetches?: number } | undefined;
+  if (loading) {
+    return (
+      <div className="content">
+        <PageHeading
+          title="系统设置"
+          description="管理非敏感运行参数、平台策略引用和连接健康状态。"
+        />
+        <LoadingState label="正在加载系统设置…" />
+      </div>
+    );
+  }
+  if (loadError) {
+    return (
+      <div className="content">
+        <PageHeading
+          title="系统设置"
+          description="管理非敏感运行参数、平台策略引用和连接健康状态。"
+        />
+        <div className="card empty">{loadError}</div>
+      </div>
+    );
+  }
   return (
     <>
       <div className="content">
@@ -2835,9 +2938,7 @@ function SettingsView({ user }: { user: AdminUser }) {
                     </div>
                   </fieldset>
                 </>
-              ) : (
-                <div className="empty">设置服务暂不可用</div>
-              )}
+              ) : null}
             </div>
           </section>
           <section className="card">
@@ -3000,31 +3101,37 @@ function SettingsView({ user }: { user: AdminUser }) {
                   <span>{admins.length} 个账号</span>
                 </div>
                 <div className="admin-list">
-                  {admins.map((admin) => (
-                    <div className="admin-row" key={admin.id}>
-                      <span className="admin-avatar">
-                        {admin.username.slice(0, 1).toUpperCase()}
-                      </span>
-                      <div className="admin-row-info">
-                        <strong title={admin.username}>{admin.username}</strong>
-                        <span>
-                          {admin.role === 'SUPER_ADMIN' ? '超级管理员' : '管理员'}
-                          {admin.id === user.id ? ' · 当前账号' : ''}
-                        </span>
-                      </div>
-                      {admin.role === 'ADMIN' ? (
-                        <button
-                          className="button compact"
-                          onClick={() => setResetTarget(admin)}
-                        >
-                          重置密码
-                        </button>
-                      ) : (
-                        <span className="admin-owner-badge">所有者</span>
-                      )}
-                    </div>
-                  ))}
-                  {admins.length === 0 ? (
+                  {adminsLoading ? <LoadingState label="正在加载管理员账号…" /> : null}
+                  {!adminsLoading && adminsError ? (
+                    <div className="admin-empty">{adminsError}</div>
+                  ) : null}
+                  {!adminsLoading
+                    ? admins.map((admin) => (
+                        <div className="admin-row" key={admin.id}>
+                          <span className="admin-avatar">
+                            {admin.username.slice(0, 1).toUpperCase()}
+                          </span>
+                          <div className="admin-row-info">
+                            <strong title={admin.username}>{admin.username}</strong>
+                            <span>
+                              {admin.role === 'SUPER_ADMIN' ? '超级管理员' : '管理员'}
+                              {admin.id === user.id ? ' · 当前账号' : ''}
+                            </span>
+                          </div>
+                          {admin.role === 'ADMIN' ? (
+                            <button
+                              className="button compact"
+                              onClick={() => setResetTarget(admin)}
+                            >
+                              重置密码
+                            </button>
+                          ) : (
+                            <span className="admin-owner-badge">所有者</span>
+                          )}
+                        </div>
+                      ))
+                    : null}
+                  {!adminsLoading && !adminsError && admins.length === 0 ? (
                     <div className="admin-empty">暂无管理员账号</div>
                   ) : null}
                 </div>
@@ -3162,6 +3269,8 @@ export default function ConsoleApp() {
   const [theme, setTheme] = useTheme();
   const [currentUser, setCurrentUser] = useState<AdminUser | null>();
   const [overview, setOverview] = useState<ApiState>();
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [overviewError, setOverviewError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [workflowsRefreshKey, setWorkflowsRefreshKey] = useState(0);
   useEffect(() => {
@@ -3175,12 +3284,19 @@ export default function ConsoleApp() {
       .catch(() => setCurrentUser(null));
   }, []);
   const loadOverview = useCallback(() => {
+    setOverviewLoading(true);
     void api<ApiState>('/api/v1/overview')
-      .then(setOverview)
+      .then((value) => {
+        setOverview(value);
+        setOverviewError('');
+      })
       .catch((reason: unknown) => {
         setOverview(undefined);
         if (reason instanceof ApiError && reason.status === 401) setCurrentUser(null);
-      });
+        else
+          setOverviewError(reason instanceof Error ? reason.message : '概览数据加载失败');
+      })
+      .finally(() => setOverviewLoading(false));
   }, []);
   useEffect(() => {
     if (currentUser && location.view === 'overview') loadOverview();
@@ -3213,7 +3329,11 @@ export default function ConsoleApp() {
       .catch(() => undefined);
   };
   if (currentUser === undefined) {
-    return <div className="app-loading">正在加载管理后台…</div>;
+    return (
+      <div className="app-loading">
+        <LoadingState label="正在加载管理后台…" />
+      </div>
+    );
   }
   if (currentUser === null) {
     return <AdminLoginPage onLogin={setCurrentUser} />;
@@ -3226,7 +3346,14 @@ export default function ConsoleApp() {
   else if (location.id !== undefined && location.view === 'drafts')
     content = <DraftEditorView id={location.id} onBack={() => navigate('drafts')} />;
   else if (location.view === 'overview')
-    content = <OverviewView data={overview} onRefresh={loadOverview} />;
+    content = (
+      <OverviewView
+        data={overview}
+        loading={overviewLoading}
+        error={overviewError}
+        onRefresh={loadOverview}
+      />
+    );
   else if (location.view === 'workflows')
     content = (
       <WorkflowsView
@@ -3284,6 +3411,8 @@ function CreateRunModal({
     'search',
   );
   const [library, setLibrary] = useState<Library>({ folders: [], documents: [] });
+  const [libraryLoading, setLibraryLoading] = useState(true);
+  const [libraryError, setLibraryError] = useState('');
   const [researchDocumentIds, setResearchDocumentIds] = useState<string[]>([]);
   const [treeSearch, setTreeSearch] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -3291,6 +3420,7 @@ function CreateRunModal({
     void api<Library>('/api/v1/research-library')
       .then((data) => {
         setLibrary(data);
+        setLibraryError('');
         setExpandedFolders(
           new Set(
             data.folders
@@ -3299,7 +3429,10 @@ function CreateRunModal({
           ),
         );
       })
-      .catch(() => undefined);
+      .catch((reason: unknown) =>
+        setLibraryError(reason instanceof Error ? reason.message : '研究资料加载失败'),
+      )
+      .finally(() => setLibraryLoading(false));
   }, []);
   const nodesByParent = new Map<string | null, Node[]>([[null, []]]);
   for (const folder of library.folders) nodesByParent.set(folder.id, []);
@@ -3536,134 +3669,147 @@ function CreateRunModal({
               </div>
             ) : (
               <>
-                <div className="workflow-selection-intro">
-                  <strong>研究资料库</strong>
-                  <span>勾选文件夹可选中其下全部资料</span>
-                </div>
-                <div className="workflow-picker">
-                  <div className="workflow-picker-left">
-                    <div className="workflow-picker-header">
-                      <Icon name="folder" />
-                      <strong>全部资料</strong>
-                      <span>{library.documents.length} 篇</span>
-                      <button
-                        onClick={() =>
-                          setResearchDocumentIds(
-                            researchDocumentIds.length === allFileIds.length
-                              ? []
-                              : allFileIds,
-                          )
-                        }
-                      >
-                        {allFileIds.length > 0 &&
-                        researchDocumentIds.length === allFileIds.length
-                          ? '取消全选'
-                          : '全选'}
-                      </button>
+                {libraryLoading ? <LoadingState label="正在加载研究资料…" /> : null}
+                {!libraryLoading && libraryError ? (
+                  <div className="workflow-library-empty">{libraryError}</div>
+                ) : null}
+                {!libraryLoading && !libraryError ? (
+                  <>
+                    <div className="workflow-selection-intro">
+                      <strong>研究资料库</strong>
+                      <span>勾选文件夹可选中其下全部资料</span>
                     </div>
-                    <div className="workflow-tree-search">
-                      <input
-                        aria-label="搜索文件夹或资料名称"
-                        value={treeSearch}
-                        onChange={(event) => setTreeSearch(event.target.value)}
-                        placeholder="搜索文件夹或资料名称"
-                      />
-                      <button disabled={!treeSearch} onClick={() => setTreeSearch('')}>
-                        ×
-                      </button>
-                    </div>
-                    <div className="workflow-tree-tools">
-                      <span>资料库 / 全部资料</span>
-                      <button
-                        disabled={library.folders.length === 0}
-                        onClick={() =>
-                          setExpandedFolders(
-                            library.folders.length > 0 &&
-                              library.folders.every((folder) =>
-                                expandedFolders.has(folder.id),
+                    <div className="workflow-picker">
+                      <div className="workflow-picker-left">
+                        <div className="workflow-picker-header">
+                          <Icon name="folder" />
+                          <strong>全部资料</strong>
+                          <span>{library.documents.length} 篇</span>
+                          <button
+                            onClick={() =>
+                              setResearchDocumentIds(
+                                researchDocumentIds.length === allFileIds.length
+                                  ? []
+                                  : allFileIds,
                               )
-                              ? new Set()
-                              : new Set(library.folders.map((folder) => folder.id)),
-                          )
-                        }
-                      >
-                        {library.folders.length > 0 &&
-                        library.folders.every((folder) => expandedFolders.has(folder.id))
-                          ? '全部收起'
-                          : '全部展开'}
-                      </button>
-                    </div>
-                    <div
-                      className="workflow-tree"
-                      role="tree"
-                      aria-label="研究资料库文件树"
-                    >
-                      {treeSearch.trim() &&
-                      !tree.some((node) =>
-                        matches(node, treeSearch.trim().toLowerCase()),
-                      ) ? (
-                        <div className="workflow-tree-empty">没有找到匹配的资料</div>
-                      ) : (
-                        tree.map((node) => renderNode(node))
-                      )}
-                    </div>
-                  </div>
-                  <div className="workflow-picker-right">
-                    <div className="workflow-picker-header">
-                      <Icon name="draft" />
-                      <strong>已选择</strong>
-                      <span>{fileDocs.length} 篇</span>
-                      <button
-                        disabled={!fileDocs.length}
-                        onClick={() => setResearchDocumentIds([])}
-                      >
-                        清空选择
-                      </button>
-                    </div>
-                    <p className="workflow-selected-note">
-                      {fileDocs.length
-                        ? '所选资料将用于本次内容生成'
-                        : '还没有选择任何资料'}
-                    </p>
-                    <div className="workflow-selected-list">
-                      {fileDocs.length ? (
-                        fileDocs.map((doc) => (
-                          <div className="workflow-selected-item" key={doc.id}>
-                            <span className="workflow-file-mark">MD</span>
-                            <span>
-                              <strong>{doc.title}</strong>
-                              <small>{pathById.get(doc.id) ?? '全部资料'}</small>
-                            </span>
-                            <button
-                              aria-label={`移除${doc.title}`}
-                              onClick={() =>
-                                setResearchDocumentIds((current) =>
-                                  current.filter((id) => id !== doc.id),
-                                )
-                              }
-                            >
-                              ×
-                            </button>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="workflow-selected-empty">
-                          <span>▧</span>
-                          <strong>尚未选择资料</strong>
-                          <small>从左侧勾选文件夹或资料</small>
+                            }
+                          >
+                            {allFileIds.length > 0 &&
+                            researchDocumentIds.length === allFileIds.length
+                              ? '取消全选'
+                              : '全选'}
+                          </button>
                         </div>
-                      )}
+                        <div className="workflow-tree-search">
+                          <input
+                            aria-label="搜索文件夹或资料名称"
+                            value={treeSearch}
+                            onChange={(event) => setTreeSearch(event.target.value)}
+                            placeholder="搜索文件夹或资料名称"
+                          />
+                          <button
+                            disabled={!treeSearch}
+                            onClick={() => setTreeSearch('')}
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div className="workflow-tree-tools">
+                          <span>资料库 / 全部资料</span>
+                          <button
+                            disabled={library.folders.length === 0}
+                            onClick={() =>
+                              setExpandedFolders(
+                                library.folders.length > 0 &&
+                                  library.folders.every((folder) =>
+                                    expandedFolders.has(folder.id),
+                                  )
+                                  ? new Set()
+                                  : new Set(library.folders.map((folder) => folder.id)),
+                              )
+                            }
+                          >
+                            {library.folders.length > 0 &&
+                            library.folders.every((folder) =>
+                              expandedFolders.has(folder.id),
+                            )
+                              ? '全部收起'
+                              : '全部展开'}
+                          </button>
+                        </div>
+                        <div
+                          className="workflow-tree"
+                          role="tree"
+                          aria-label="研究资料库文件树"
+                        >
+                          {treeSearch.trim() &&
+                          !tree.some((node) =>
+                            matches(node, treeSearch.trim().toLowerCase()),
+                          ) ? (
+                            <div className="workflow-tree-empty">没有找到匹配的资料</div>
+                          ) : (
+                            tree.map((node) => renderNode(node))
+                          )}
+                        </div>
+                      </div>
+                      <div className="workflow-picker-right">
+                        <div className="workflow-picker-header">
+                          <Icon name="draft" />
+                          <strong>已选择</strong>
+                          <span>{fileDocs.length} 篇</span>
+                          <button
+                            disabled={!fileDocs.length}
+                            onClick={() => setResearchDocumentIds([])}
+                          >
+                            清空选择
+                          </button>
+                        </div>
+                        <p className="workflow-selected-note">
+                          {fileDocs.length
+                            ? '所选资料将用于本次内容生成'
+                            : '还没有选择任何资料'}
+                        </p>
+                        <div className="workflow-selected-list">
+                          {fileDocs.length ? (
+                            fileDocs.map((doc) => (
+                              <div className="workflow-selected-item" key={doc.id}>
+                                <span className="workflow-file-mark">MD</span>
+                                <span>
+                                  <strong>{doc.title}</strong>
+                                  <small>{pathById.get(doc.id) ?? '全部资料'}</small>
+                                </span>
+                                <button
+                                  aria-label={`移除${doc.title}`}
+                                  onClick={() =>
+                                    setResearchDocumentIds((current) =>
+                                      current.filter((id) => id !== doc.id),
+                                    )
+                                  }
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="workflow-selected-empty">
+                              <span>▧</span>
+                              <strong>尚未选择资料</strong>
+                              <small>从左侧勾选文件夹或资料</small>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-                <div className="workflow-optional-note">
-                  <Icon name="info" />
-                  仅勾选资料会作为生成参考；未勾选的资料不会加入本次工作流。
-                </div>
-                {noDocs ? (
-                  <div className="workflow-library-empty">
-                    资料库暂无内容，请先到“研究资料”创建 Markdown 资料。
-                  </div>
+                    <div className="workflow-optional-note">
+                      <Icon name="info" />
+                      仅勾选资料会作为生成参考；未勾选的资料不会加入本次工作流。
+                    </div>
+                    {noDocs ? (
+                      <div className="workflow-library-empty">
+                        资料库暂无内容，请先到“研究资料”创建 Markdown 资料。
+                      </div>
+                    ) : null}
+                  </>
                 ) : null}
               </>
             )}

@@ -1,9 +1,10 @@
 'use client';
 
 import { Icon } from '@tutor-flow/ui';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { formatTokenCount } from './number-format.js';
+import { LoadingState } from './loading-state.js';
 import { ToastNotice } from './toast.js';
 
 type StepAttempt = {
@@ -529,13 +530,17 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
   const [focusedStep, setFocusedStep] = useState<string | null>(null);
   const [selected, setSelected] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const chainBodyRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     setFocusedStep(null);
     setSelected('');
     setDetail(null);
     setError('');
+    setLoading(true);
   }, [id]);
   const load = useCallback(() => {
+    setLoading(true);
     void request<WorkflowDetail>('/api/v1/runs/' + id)
       .then((value) => {
         setDetail(value);
@@ -543,13 +548,38 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
       })
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : '任务加载失败'),
-      );
+      )
+      .finally(() => setLoading(false));
   }, [id]);
   useEffect(() => {
     load();
     const timer = window.setInterval(load, 5000);
     return () => window.clearInterval(timer);
   }, [load]);
+  useEffect(() => {
+    if (!detail || focusedStep !== null) return;
+    const lastAttemptedStep = [...detail.steps].sort(
+      (a, b) =>
+        new Date(b.startedAt ?? 0).getTime() - new Date(a.startedAt ?? 0).getTime(),
+    )[0]?.stepType;
+    const isTerminal = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(detail.status);
+    const followedStep =
+      (isTerminal ? lastAttemptedStep : detail.currentStepType) ??
+      lastAttemptedStep ??
+      'QUERY_PLANNING';
+    const scrollBody = chainBodyRef.current;
+    const step = scrollBody?.querySelector<HTMLElement>(
+      `[data-step-type="${followedStep}"]`,
+    );
+    if (!scrollBody || !step) return;
+    const bodyRect = scrollBody.getBoundingClientRect();
+    const stepRect = step.getBoundingClientRect();
+    if (stepRect.top < bodyRect.top) {
+      scrollBody.scrollTop -= bodyRect.top - stepRect.top;
+    } else if (stepRect.bottom > bodyRect.bottom) {
+      scrollBody.scrollTop += stepRect.bottom - bodyRect.bottom;
+    }
+  }, [detail, focusedStep]);
   const act = (path: string, body: object, message: string) => {
     setError('');
     void request('/api/v1/runs/' + id + path, {
@@ -568,7 +598,11 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
           <button className="button" onClick={onBack}>
             <Icon name="back" /> 返回工作流
           </button>
-          <div className="card empty">正在加载任务…</div>
+          {loading ? (
+            <LoadingState label="正在加载任务…" />
+          ) : (
+            <div className="card empty">{error || '未找到任务'}</div>
+          )}
         </div>
         <ToastNotice message={error} />
       </>
@@ -583,6 +617,7 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
     (isTerminal ? lastAttemptedStep : detail.currentStepType) ??
     lastAttemptedStep ??
     'QUERY_PLANNING';
+  const isFollowing = focusedStep === null;
   const attempt = latestAttempt(detail, current);
   const completed = STAGES.flatMap((stage) => stage.steps).filter(
     (step) => stepState(detail, step) === 'SUCCEEDED',
@@ -629,7 +664,15 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
             <Icon name="back" /> 返回
           </button>
           <button className="button" onClick={load}>
-            <Icon name="retry" /> 刷新
+            {loading ? (
+              <span
+                className="loading-spinner loading-spinner-small"
+                aria-hidden="true"
+              />
+            ) : (
+              <Icon name="retry" />
+            )}{' '}
+            刷新
           </button>
           {['FAILED', 'NEEDS_HUMAN'].includes(detail.status) ? (
             <button
@@ -717,10 +760,21 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
       <div className="flow-workspace">
         <section className="card flow-chain">
           <div className="card-heading">
-            <h2>流程步骤</h2>
-            <span>默认跟踪最新步骤，点击可查看其他输出</span>
+            <div className="flow-chain-heading-main">
+              <h2>流程步骤</h2>
+              <button
+                type="button"
+                className={'flow-follow-button ' + (isFollowing ? 'active' : '')}
+                aria-pressed={isFollowing}
+                disabled={isFollowing}
+                onClick={() => setFocusedStep(null)}
+                title={isFollowing ? '正在自动跟踪最新步骤' : '恢复自动跟踪最新步骤'}
+              >
+                {isFollowing ? '跟踪中' : '点我恢复跟踪'}
+              </button>
+            </div>
           </div>
-          <div className="flow-chain-body">
+          <div className="flow-chain-body" ref={chainBodyRef}>
             {STAGES.map((stage) => (
               <div className="flow-stage" key={stage.title}>
                 <h3>{stage.title}</h3>
@@ -738,17 +792,14 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
                         (current === stepType ? 'selected ' : '') +
                         state.toLowerCase()
                       }
+                      data-step-type={stepType}
                       key={stepType}
                       title={
-                        current === stepType
-                          ? '再次点击恢复自动跟踪'
+                        isFollowing && current === stepType
+                          ? '点击后停留在此步骤'
                           : '点击查看此步骤输出'
                       }
-                      onClick={() =>
-                        setFocusedStep((focused) =>
-                          focused === stepType ? null : stepType,
-                        )
-                      }
+                      onClick={() => setFocusedStep(stepType)}
                     >
                       <span className="flow-step-mark">
                         {state === 'SUCCEEDED' ? (

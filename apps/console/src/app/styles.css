@@ -2851,7 +2851,7 @@ html[data-theme='dark'] .research-code-block {
     min-height: 38px;
     padding: 0;
   }
-  .topbar-create > span {
+  .topbar-create-label {
     display: none;
   }
   .main-content-scroll {
@@ -3070,7 +3070,8 @@ html[data-theme='dark'] .research-code-block {
     padding-bottom: calc(16px + env(safe-area-inset-bottom));
   }
   .workflow-create-page-footer {
-    bottom: calc(62px + env(safe-area-inset-bottom));
+    position: static;
+    bottom: auto;
   }
 }
 

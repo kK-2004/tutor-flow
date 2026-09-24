@@ -561,7 +561,7 @@ function Shell({
               aria-label="新建任务"
             >
               <Icon name="plus" />
-              <span>新建任务</span>
+              <span className="topbar-create-label">新建任务</span>
             </button>
           </div>
         </header>

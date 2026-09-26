@@ -94,4 +94,35 @@ describe('内容中心开放 API 客户端', () => {
       new ContentCenterError(403, '无权访问'),
     );
   });
+
+  it('批量删除仅提交文件 ID，并返回删除结果', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ deletedFiles: 2, failedObjects: 0 }), {
+        status: 200,
+      }),
+    );
+    const client = createContentCenterClient({
+      baseUrl: 'https://content.example/',
+      appToken: 'kapp_test',
+      fetcher,
+    });
+
+    await expect(client.deleteFiles([41, 42])).resolves.toEqual({
+      deletedFiles: 2,
+      failedObjects: 0,
+    });
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      'https://content.example/api/open/files/batch-delete',
+    );
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer kapp_test',
+        'content-type': 'application/json',
+      },
+    });
+    expect(JSON.parse(fetcher.mock.calls[0]?.[1]?.body as string)).toEqual({
+      fileIds: [41, 42],
+    });
+  });
 });

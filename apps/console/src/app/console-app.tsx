@@ -219,6 +219,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       response.status,
     );
   }
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
@@ -1229,6 +1230,15 @@ function ResearchView() {
   };
   type Folder = { id: string; name: string; parentId: string | null };
   type UploadedImage = { fileId: number; name: string; contentType: string };
+  type DeleteResult = {
+    deletedDocuments: number;
+    cleanup: {
+      deletedFiles: number;
+      failedObjects: number;
+      retainedFiles: number;
+      failedFileIds: number[];
+    };
+  };
   type PendingImage = UploadedImage & { start: number; end: number };
   type FailedImageUpload = { file: File; start: number; end: number };
   const [library, setLibrary] = useState<{ documents: Doc[]; folders: Folder[] }>({
@@ -1237,6 +1247,10 @@ function ResearchView() {
   });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [deleteNotice, setDeleteNotice] = useState('');
+  const [deleteNoticeTone, setDeleteNoticeTone] = useState<'info' | 'danger'>('info');
+  const [deleteNoticeVersion, setDeleteNoticeVersion] = useState(0);
+  const refreshSequence = useRef(0);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [selectionMode, setSelectionMode] = useState(false);
@@ -1263,16 +1277,31 @@ function ResearchView() {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const codeMenuRef = useRef<HTMLDivElement>(null);
   const refresh = () => {
+    const sequence = ++refreshSequence.current;
     setLoading(true);
     return void api<typeof library>('/api/v1/research-library')
       .then((value) => {
+        if (sequence !== refreshSequence.current) return;
         setLibrary(value);
         setLoadError('');
       })
-      .catch((reason: unknown) =>
-        setLoadError(reason instanceof Error ? reason.message : '研究资料加载失败'),
-      )
-      .finally(() => setLoading(false));
+      .catch((reason: unknown) => {
+        if (sequence === refreshSequence.current)
+          setLoadError(reason instanceof Error ? reason.message : '研究资料加载失败');
+      })
+      .finally(() => {
+        if (sequence === refreshSequence.current) setLoading(false);
+      });
+  };
+  const showDeleteResult = (result: DeleteResult) => {
+    const failed = result.cleanup.failedFileIds.length + result.cleanup.failedObjects;
+    setDeleteNoticeVersion((version) => version + 1);
+    setDeleteNoticeTone(failed > 0 ? 'danger' : 'info');
+    setDeleteNotice(
+      failed > 0
+        ? `资料已删除，但 ${failed} 张图片未能从内容中心完整清理，请查看服务端日志。`
+        : `已删除 ${result.deletedDocuments} 篇资料，清理 ${result.cleanup.deletedFiles} 张未被引用的图片。`,
+    );
   };
   useEffect(refresh, []);
   useEffect(() => {
@@ -1377,13 +1406,26 @@ function ResearchView() {
         }
       }
     }
-    void api(`/api/v1/research-library/folders/${folder.id}`, { method: 'DELETE' }).then(
-      () => {
+    void api<DeleteResult>(`/api/v1/research-library/folders/${folder.id}`, {
+      method: 'DELETE',
+    })
+      .then((result) => {
+        setLibrary((current) => ({
+          folders: current.folders.filter((item) => !deletedFolderIds.has(item.id)),
+          documents: current.documents.filter(
+            (document) => !document.folderId || !deletedFolderIds.has(document.folderId),
+          ),
+        }));
         if (activeFolderId && deletedFolderIds.has(activeFolderId))
           setActiveFolderId(folder.parentId);
+        showDeleteResult(result);
         refresh();
-      },
-    );
+      })
+      .catch((reason: unknown) => {
+        setDeleteNoticeVersion((version) => version + 1);
+        setDeleteNoticeTone('danger');
+        setDeleteNotice(reason instanceof Error ? reason.message : '删除文件夹失败');
+      });
   };
   const deleteDocs = (ids: string[]) => {
     if (
@@ -1391,14 +1433,26 @@ function ResearchView() {
       !window.confirm(`确定删除选中的 ${ids.length} 篇资料吗？此操作无法撤销。`)
     )
       return;
-    void api('/api/v1/research-library/documents', {
+    void api<DeleteResult>('/api/v1/research-library/documents', {
       method: 'DELETE',
       body: JSON.stringify({ ids }),
-    }).then(() => {
-      setSelected([]);
-      setSelectionMode(false);
-      refresh();
-    });
+    })
+      .then((result) => {
+        const deletedIds = new Set(ids);
+        setLibrary((current) => ({
+          ...current,
+          documents: current.documents.filter((document) => !deletedIds.has(document.id)),
+        }));
+        setSelected([]);
+        setSelectionMode(false);
+        showDeleteResult(result);
+        refresh();
+      })
+      .catch((reason: unknown) => {
+        setDeleteNoticeVersion((version) => version + 1);
+        setDeleteNoticeTone('danger');
+        setDeleteNotice(reason instanceof Error ? reason.message : '删除资料失败');
+      });
   };
   const insertMarkdown = (before: string, after = '') => {
     const area = markdownRef.current;
@@ -1898,6 +1952,11 @@ function ResearchView() {
           </div>
         </div>
       </section>
+      <ToastNotice
+        key={deleteNoticeVersion}
+        message={deleteNotice}
+        tone={deleteNoticeTone}
+      />
     </div>
   );
 }

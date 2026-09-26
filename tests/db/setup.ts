@@ -44,6 +44,8 @@ export function createTestDb(): DbClient {
 /** 清空全部业务表（先临时摘除审计防删触发器） */
 export async function truncateAll(db: DbClient): Promise<void> {
   const tables = [
+    'research_document',
+    'research_folder',
     'admin_session',
     'admin_user',
     'publish_receipt',

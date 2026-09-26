@@ -16,6 +16,7 @@ import {
 import {
   LLM_TASKS,
   PLATFORM_OPTIONS,
+  parseResearchDocumentImages,
   parseXiaohongshuPolicy,
   parseContentCenterSettings,
   type QualityThresholds,
@@ -32,6 +33,7 @@ import {
 import { and, count, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { ContentCenterError, createContentCenterClient } from '@tutor-flow/integrations';
 
 import {
   workflowEvents,
@@ -90,6 +92,109 @@ export function registerOperationsRoutes(
 ): void {
   const { db, env } = options;
   const authenticate = requireAuthenticated(env, db);
+
+  const cleanupRemovedDocuments = async (removed: Array<{ markdown: string }>) => {
+    const removedFileIds = new Set(
+      removed.flatMap((document) =>
+        parseResearchDocumentImages(document.markdown).map((image) => image.fileId),
+      ),
+    );
+    const cleanup = {
+      deletedFiles: 0,
+      failedObjects: 0,
+      retainedFiles: 0,
+      failedFileIds: [] as number[],
+    };
+    if (removedFileIds.size === 0) return cleanup;
+
+    const [remainingDocuments, drafts, artifacts] = await Promise.all([
+      db.db.select({ markdown: researchDocuments.markdown }).from(researchDocuments),
+      db.db
+        .select({
+          body: draftRevisions.body,
+          mediaObjectKeys: draftRevisions.mediaObjectKeys,
+        })
+        .from(draftRevisions),
+      db.db
+        .select({
+          body: contentArtifacts.body,
+          mediaObjectKeys: contentArtifacts.mediaObjectKeys,
+        })
+        .from(contentArtifacts),
+    ]);
+    const referenced = new Set<number>();
+    for (const markdown of [
+      ...remainingDocuments.map((document) => document.markdown),
+      ...drafts.map((draft) => draft.body),
+      ...artifacts.map((artifact) => artifact.body),
+    ]) {
+      for (const image of parseResearchDocumentImages(markdown)) {
+        referenced.add(image.fileId);
+      }
+    }
+    for (const mediaOwner of [...drafts, ...artifacts]) {
+      if (!Array.isArray(mediaOwner.mediaObjectKeys)) continue;
+      for (const media of mediaOwner.mediaObjectKeys) {
+        if (
+          typeof media === 'object' &&
+          media !== null &&
+          'fileId' in media &&
+          typeof media.fileId === 'number'
+        ) {
+          referenced.add(media.fileId);
+        }
+      }
+    }
+    const orphanIds = [...removedFileIds].filter((fileId) => !referenced.has(fileId));
+    cleanup.retainedFiles = removedFileIds.size - orphanIds.length;
+    if (orphanIds.length === 0) return cleanup;
+    if (env.CONTENT_CENTER_URL === undefined || options.secrets == null) {
+      cleanup.failedFileIds.push(...orphanIds);
+      app.log.warn({ fileIds: orphanIds }, '内容中心未配置，资料图片未清理');
+      return cleanup;
+    }
+
+    try {
+      const token = await options.secrets.resolveSecret(env.CONTENT_CENTER_TOKEN_REF);
+      const client = createContentCenterClient({
+        baseUrl: env.CONTENT_CENTER_URL,
+        appToken: token,
+      });
+      const deleteBatch = async (ids: number[]): Promise<void> => {
+        try {
+          const result = await client.deleteFiles(ids);
+          cleanup.deletedFiles += result.deletedFiles;
+          cleanup.failedObjects += result.failedObjects;
+        } catch (error) {
+          if (
+            ids.length > 1 &&
+            error instanceof ContentCenterError &&
+            [404, 409].includes(error.status)
+          ) {
+            const middle = Math.floor(ids.length / 2);
+            await deleteBatch(ids.slice(0, middle));
+            await deleteBatch(ids.slice(middle));
+            return;
+          }
+          cleanup.failedFileIds.push(...ids);
+          app.log.warn(
+            {
+              fileIds: ids,
+              status: error instanceof ContentCenterError ? error.status : null,
+            },
+            '资料图片清理失败',
+          );
+        }
+      };
+      for (let offset = 0; offset < orphanIds.length; offset += 100) {
+        await deleteBatch(orphanIds.slice(offset, offset + 100));
+      }
+    } catch {
+      cleanup.failedFileIds.push(...orphanIds);
+      app.log.warn({ fileIds: orphanIds }, '内容中心令牌不可用，资料图片未清理');
+    }
+    return cleanup;
+  };
 
   app.get(
     '/api/v1/research-library',
@@ -168,15 +273,20 @@ export function registerOperationsRoutes(
           }
         }
       }
-      await db.db.transaction(async (tx) => {
-        await tx
+      const removed = await db.db.transaction(async (tx) => {
+        const documents = await tx
           .delete(researchDocuments)
-          .where(inArray(researchDocuments.folderId, [...folderIds]));
+          .where(inArray(researchDocuments.folderId, [...folderIds]))
+          .returning({ markdown: researchDocuments.markdown });
         await tx
           .delete(researchFolders)
           .where(inArray(researchFolders.id, [...folderIds]));
+        return documents;
       });
-      return reply.code(204).send();
+      return reply.send({
+        deletedDocuments: removed.length,
+        cleanup: await cleanupRemovedDocuments(removed),
+      });
     },
   );
 
@@ -239,10 +349,14 @@ export function registerOperationsRoutes(
         z.object({ ids: z.array(z.string()).min(1).max(500) }).strict(),
         request.body,
       );
-      await db.db
+      const removed = await db.db
         .delete(researchDocuments)
-        .where(inArray(researchDocuments.id, body.ids));
-      return reply.code(204).send();
+        .where(inArray(researchDocuments.id, body.ids))
+        .returning({ markdown: researchDocuments.markdown });
+      return reply.send({
+        deletedDocuments: removed.length,
+        cleanup: await cleanupRemovedDocuments(removed),
+      });
     },
   );
 

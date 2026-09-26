@@ -1,6 +1,6 @@
 # k-File 内容中心接入
 
-本项目参考本地 `k-file/sdk/java` 的开放 API。对象存储、密钥和默认上传源在 k-File 侧配置；本项目不直接接触对象存储凭据。现阶段管理台支持 JPEG、PNG、WebP 图片上传，并在草稿的 `mediaObjectKeys` JSON 数组中保存 `{fileId, name, contentType}`，不保存 CDN URL。原有普通对象键字符串仍可读取。没有实现 Java SDK 的分片上传、批量删除或自动清理孤儿文件。
+本项目参考本地 `k-file/sdk/java` 的开放 API。对象存储、密钥和默认上传源在 k-File 侧配置；本项目不直接接触对象存储凭据。现阶段管理台支持 JPEG、PNG、WebP 图片上传，并在草稿的 `mediaObjectKeys` JSON 数组中保存 `{fileId, name, contentType}`，不保存 CDN URL。原有普通对象键字符串仍可读取。暂未实现 Java SDK 的分片上传。
 
 ## 配置
 
@@ -14,3 +14,7 @@
 管理台调用 `POST /api/v1/media/uploads/init`，API 使用应用令牌向 k-File 申请预签名地址。浏览器使用与初始化请求完全一致的 `Content-Type` 直接 PUT 图片字节，成功后调用 `POST /api/v1/media/uploads/complete`；API 让 k-File 读取对象的权威元数据并返回媒体引用。草稿自动保存该引用，删除草稿中的引用只解除关联，不删除 k-File 中的文件。预览通过 `GET /api/v1/media/:fileId/preview-link` 获取使用 `downloadExpiresIn` 的临时下载签名；另可通过 `GET /api/v1/media/:fileId/download-link` 获取未经重定向解析的限时下载地址。这些接口均要求运营人员身份。
 
 预签名地址会短时返回浏览器，应用令牌不会返回浏览器。请勿在日志、分析事件或错误上报中记录完整预签名 URL。图片用于资料编辑、模型识别和资料引用。
+
+## 研究资料删除
+
+删除研究资料或包含资料的文件夹时，API 物理删除对应数据库记录，并通过 k-File 的批量删除接口同步清理图片。仍被其他研究资料、草稿或内容产物引用的文件会保留；发布任务引用的草稿也包含在内。接口返回已删除资料数、已清理图片数和失败数；远端清理失败时，资料删除仍然生效，管理台显示警告，服务端日志记录待处理的文件 ID。草稿中移除媒体引用仍只解除关联。升级前已经删除的资料无法凭数据库记录反查其遗留文件，需要根据内容中心记录另行清理。

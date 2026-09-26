@@ -39,6 +39,11 @@ export interface ContentCenterCdnLink extends ContentCenterLink {
   contentType: string;
 }
 
+export interface ContentCenterDeleteResult {
+  deletedFiles: number;
+  failedObjects: number;
+}
+
 export interface ContentCenterUploadOptions {
   source?: string;
   path?: string;
@@ -210,6 +215,13 @@ export function createContentCenterClient(options: ContentCenterClientOptions) {
         expiresIn: requiredNumber(raw['expiresIn'], 'expiresIn'),
         permanent: raw['permanent'] === true,
         contentType: requiredString(raw['contentType'], 'contentType'),
+      };
+    },
+    async deleteFiles(fileIds: number[]): Promise<ContentCenterDeleteResult> {
+      const raw = await post('/api/open/files/batch-delete', { fileIds });
+      return {
+        deletedFiles: requiredNumber(raw['deletedFiles'], 'deletedFiles'),
+        failedObjects: requiredNumber(raw['failedObjects'], 'failedObjects'),
       };
     },
   };

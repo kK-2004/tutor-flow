@@ -281,6 +281,7 @@ describe.skipIf(!redisReady)('检查点推进与人工停点', () => {
     // 推进到人工选向停点
     let run = await requireRun(db.db, created.runId);
     expect(run.status).toBe('WAITING_DIRECTION');
+    expect(run.currentStepType).toBe('SELECT_DIRECTION');
     const directions = await listDirectionOptions(db.db, created.runId);
     expect(directions).toHaveLength(1);
     const directionId = directions[0]?.id;
@@ -299,6 +300,129 @@ describe.skipIf(!redisReady)('检查点推进与人工停点', () => {
     await drive();
     run = await requireRun(db.db, created.runId);
     expect(run.status).toBe('NEEDS_REVIEW');
+  });
+});
+
+describe('步骤成功后的检查点恢复', () => {
+  it('同一阶段推进时更新当前步骤', async () => {
+    await truncateAll(db);
+    const created = await createRun(
+      db.db,
+      runInput('operator:same-phase', '同阶段检查点测试', 'manual'),
+    );
+    const initial = await requireRun(db.db, created.runId);
+    await transitionRunStatus(db.db, created.runId, 'RESEARCHING', {
+      expectedVersion: initial.version,
+      currentStepType: 'QUERY_PLANNING',
+    });
+
+    await engine.advanceAfterStep(created.runId, 'QUERY_PLANNING');
+
+    const advanced = await requireRun(db.db, created.runId);
+    expect(advanced.status).toBe('RESEARCHING');
+    expect(advanced.currentStepType).toBe('SEARCH');
+  });
+
+  it('方向已生成但状态推进失败时，重投只补推进且不重复生成', async () => {
+    await truncateAll(db);
+    const created = await createRun(
+      db.db,
+      runInput('operator:checkpoint', '方向推进恢复测试', 'manual'),
+    );
+    const initial = await requireRun(db.db, created.runId);
+    await transitionRunStatus(db.db, created.runId, 'RESEARCHING', {
+      expectedVersion: initial.version,
+      currentStepType: 'GENERATE_DIRECTIONS',
+    });
+
+    let generated = 0;
+    let advances = 0;
+    const recoverableProcessor = createStepProcessor({
+      db,
+      handlers: {
+        GENERATE_DIRECTIONS: async (context) => {
+          generated += 1;
+          return generateOneDirection(context);
+        },
+      },
+      onStepSuccess: async ({ run, data }) => {
+        advances += 1;
+        if (advances === 1) throw new Error('模拟检查点写入失败');
+        await engine.advanceAfterStep(run.id, data.stepType);
+      },
+    });
+    const job = {
+      data: {
+        runId: created.runId,
+        stepType: 'GENERATE_DIRECTIONS',
+        attemptNo: 1,
+      },
+    } as never;
+
+    await expect(recoverableProcessor(job)).rejects.toThrow('模拟检查点写入失败');
+    expect((await requireRun(db.db, created.runId)).status).toBe('RESEARCHING');
+    expect(await listDirectionOptions(db.db, created.runId)).toHaveLength(1);
+    expect(
+      (await db.db.select().from(stepRuns).where(eq(stepRuns.runId, created.runId)))[0]
+        ?.status,
+    ).toBe('SUCCEEDED');
+
+    await recoverableProcessor(job);
+    const resumed = await requireRun(db.db, created.runId);
+    expect(resumed.status).toBe('WAITING_DIRECTION');
+    expect(resumed.currentStepType).toBe('SELECT_DIRECTION');
+    expect(generated).toBe(1);
+    expect(advances).toBe(2);
+
+    await recoverableProcessor(job);
+    expect(advances).toBe(2);
+    expect(await listDirectionOptions(db.db, created.runId)).toHaveLength(1);
+  });
+});
+
+describe('首个步骤失败处置', () => {
+  it.each([
+    ['TRANSIENT', 'RETRY_WAIT'],
+    ['VALIDATION', 'NEEDS_HUMAN'],
+  ] as const)('QUEUED 状态下的 %s 错误进入 %s', async (category, expectedStatus) => {
+    await truncateAll(db);
+    const created = await createRun(
+      db.db,
+      runInput(`operator:first-${category}`, `首步${category}失败`, 'manual'),
+    );
+    const firstStepProcessor = createStepProcessor({
+      db,
+      handlers: {
+        QUERY_PLANNING: async () => {
+          throw new StepFailure(category, '模拟首个步骤失败');
+        },
+      },
+      onStepFailure: async ({ run, data, attempt, message }) => {
+        await engine.handleStepFailure(run.id, {
+          stepType: data.stepType,
+          stepRunId: attempt.id,
+          attemptNo: attempt.attemptNo,
+          category,
+          message,
+        });
+      },
+    });
+
+    const job = {
+      data: { runId: created.runId, stepType: 'QUERY_PLANNING', attemptNo: 1 },
+    } as never;
+    await firstStepProcessor(job);
+    await firstStepProcessor(job);
+
+    expect((await requireRun(db.db, created.runId)).status).toBe(expectedStatus);
+    const events = await listEventsAfter(db.db, created.runId);
+    expect(
+      events.filter(
+        (event) =>
+          event.name ===
+          (category === 'TRANSIENT' ? 'run.retry_scheduled' : 'run.needs_human'),
+      ),
+    ).toHaveLength(1);
   });
 });
 

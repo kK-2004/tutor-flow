@@ -21,6 +21,7 @@ import {
   type WorkflowRunStatus,
 } from '@tutor-flow/domain';
 import {
+  advanceRunStep,
   appendAuditEvent,
   appendWorkflowEvent,
   enqueueOutbox,
@@ -240,9 +241,14 @@ export function createWorkflowEngine(db: DbClient): WorkflowEngine {
       if (plan.status !== undefined && plan.status !== run.status) {
         await transitionRunStatus(tx, runId, plan.status, {
           expectedVersion: run.version,
-          currentStepType: plan.nextStep ?? run.currentStepType,
+          currentStepType:
+            plan.stop === 'WAITING_DIRECTION'
+              ? 'SELECT_DIRECTION'
+              : (plan.nextStep ?? run.currentStepType),
           humanWaitSince: plan.stop !== undefined ? new Date() : null,
         });
+      } else if (plan.nextStep !== undefined && plan.nextStep !== run.currentStepType) {
+        await advanceRunStep(tx, runId, plan.nextStep, run.version);
       }
       await appendWorkflowEvent(tx, runId, options.event, options.payload);
       if (options.nextJob !== undefined) {

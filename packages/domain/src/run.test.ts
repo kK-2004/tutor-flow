@@ -24,6 +24,11 @@ describe('工作流状态机', () => {
     expect(canTransition('PUBLISHING', 'SUCCEEDED')).toBe(true);
   });
 
+  it('首个步骤在排队状态失败时可进入重试或人工处理', () => {
+    expect(canTransition('QUEUED', 'RETRY_WAIT')).toBe(true);
+    expect(canTransition('QUEUED', 'NEEDS_HUMAN')).toBe(true);
+  });
+
   it('发布进行中不允许取消（必须到达安全检查点）', () => {
     expect(canTransition('PUBLISHING', 'CANCELLED')).toBe(false);
   });

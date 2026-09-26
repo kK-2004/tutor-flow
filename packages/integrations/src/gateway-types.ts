@@ -86,7 +86,8 @@ export interface LlmRequest {
     mediaType: string;
     detail: 'low' | 'high' | 'auto';
   }>;
-  maxTokens: number;
+  /** 省略时由模型服务决定输出上限。 */
+  maxTokens?: number;
   /** 结构化输出的本地校验及供应商约束 */
   outputSchema?: import('zod').ZodType;
   outputName?: string;

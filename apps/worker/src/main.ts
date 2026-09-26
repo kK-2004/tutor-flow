@@ -320,6 +320,16 @@ const processStepJob = createStepProcessor({
       category,
       message,
     });
+    console.warn(
+      `工作流步骤失败 ${JSON.stringify({
+        occurredAt: new Date().toISOString(),
+        runId: run.id,
+        stepType: data.stepType,
+        attemptNo: attempt.attemptNo,
+        category,
+        message,
+      })}`,
+    );
   },
 });
 
@@ -332,7 +342,16 @@ const stepWorker = new Worker<StepJobData>(
 );
 
 stepWorker.on('failed', (job, error) => {
-  console.error(`步骤任务失败：${job?.id ?? '未知'}`, error);
+  console.error(
+    `步骤任务失败 ${JSON.stringify({
+      occurredAt: new Date().toISOString(),
+      jobId: job?.id ?? null,
+      runId: job?.data.runId ?? null,
+      stepType: job?.data.stepType ?? null,
+      attemptNo: job?.data.attemptNo ?? null,
+    })}`,
+    error,
+  );
 });
 
 // 发件箱分发器：数据库 → BullMQ

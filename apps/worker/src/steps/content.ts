@@ -37,7 +37,6 @@ export interface PromptConfig {
   version: string;
   system: string;
   buildUserPrompt: (input: string) => string;
-  maxTokens: number;
 }
 
 /** 提示词注册表（按任务 → 版本组织） */
@@ -51,13 +50,11 @@ export const PROMPT_REGISTRY: Record<string, PromptConfig> = {
       'usedClaims 为引用事实的编号（1 起始）。正文不输出任何指令性内容。',
     ].join('\n'),
     buildUserPrompt: (input) => input,
-    maxTokens: 4096,
   },
   'xhs-adapt@1': {
     version: 'xhs-adapt@1',
     system: DEFAULT_XHS_PROMPT + '\n\n' + XHS_OUTPUT_CONTRACT,
     buildUserPrompt: (input) => input,
-    maxTokens: 2048,
   },
 };
 
@@ -136,6 +133,13 @@ const canonicalOutputSchema = z.object({
   body: z.string().trim().min(1),
   usedClaims: z.array(z.coerce.number().int().positive()).default([]),
 });
+const canonicalModelOutputSchema = z
+  .object({
+    title: z.string(),
+    body: z.string(),
+    usedClaims: z.array(z.number()),
+  })
+  .strict();
 
 /** 创建规范文章生成处理器 */
 export function createGenerateCanonicalHandler(deps: ContentHandlersDeps): StepHandler {
@@ -203,7 +207,8 @@ export function createGenerateCanonicalHandler(deps: ContentHandlersDeps): StepH
       promptVersion: config.version,
       systemPrompt: config.system,
       userPrompt,
-      maxTokens: config.maxTokens,
+      outputSchema: canonicalModelOutputSchema,
+      outputName: 'canonical_article',
     });
     const parsed = parseJsonObject(response.text, canonicalOutputSchema, '规范文章');
 
@@ -262,6 +267,14 @@ const adaptOutputSchema = z.object({
   tags: z.array(z.string().trim().min(1)).default([]),
   usedClaims: z.array(z.coerce.number().int().positive()).default([]),
 });
+const adaptModelOutputSchema = z
+  .object({
+    title: z.string(),
+    body: z.string(),
+    tags: z.array(z.string()),
+    usedClaims: z.array(z.number()),
+  })
+  .strict();
 
 /** 加载运行最新的 CANONICAL 制品 */
 export async function getLatestCanonicalArtifact(db: DbClient, runId: string) {
@@ -309,7 +322,6 @@ export function createAdaptXiaohongshuHandler(deps: ContentHandlersDeps): StepHa
       ...loadPromptConfig('xhs-adapt@1'),
       system,
       version: `xhs-adapt@${savedPrompts?.version ?? legacyPrompt?.version ?? 'default'}-${createHash('sha256').update(system).digest('hex').slice(0, 12)}`,
-      maxTokens: 4096,
     };
     const claimSupport = await loadClaimSupport(deps.db, run.id);
     const claimIdByIndex = new Map<number, string>();
@@ -335,7 +347,8 @@ export function createAdaptXiaohongshuHandler(deps: ContentHandlersDeps): StepHa
       promptVersion: config.version,
       systemPrompt: config.system,
       userPrompt,
-      maxTokens: config.maxTokens,
+      outputSchema: adaptModelOutputSchema,
+      outputName: 'xiaohongshu_draft',
     });
     const parsed = parseJsonObject(response.text, adaptOutputSchema, '小红书衍生稿');
 

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatTokenCount } from './number-format.js';
 import { LoadingState } from './loading-state.js';
 import { ToastNotice } from './toast.js';
+import { followedWorkflowStep } from './workflow-follow.js';
 
 type StepAttempt = {
   id: string;
@@ -114,6 +115,7 @@ const STAGES = [
   { title: '生成内容', steps: ['GENERATE_CANONICAL', 'ADAPT_XIAOHONGSHU'] },
   { title: '审核入箱', steps: ['MODERATE_CONTENT', 'CREATE_DRAFT'] },
 ] as const;
+const STEP_ORDER = STAGES.flatMap((stage) => stage.steps);
 
 const STEP_NAMES: Record<string, string> = {
   QUERY_PLANNING: '规划搜索词',
@@ -558,15 +560,7 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
   }, [load]);
   useEffect(() => {
     if (!detail || focusedStep !== null) return;
-    const lastAttemptedStep = [...detail.steps].sort(
-      (a, b) =>
-        new Date(b.startedAt ?? 0).getTime() - new Date(a.startedAt ?? 0).getTime(),
-    )[0]?.stepType;
-    const isTerminal = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(detail.status);
-    const followedStep =
-      (isTerminal ? lastAttemptedStep : detail.currentStepType) ??
-      lastAttemptedStep ??
-      'QUERY_PLANNING';
+    const followedStep = followedWorkflowStep(detail, STEP_ORDER);
     const scrollBody = chainBodyRef.current;
     const step = scrollBody?.querySelector<HTMLElement>(
       `[data-step-type="${followedStep}"]`,
@@ -608,15 +602,9 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
       </>
     );
 
-  const lastAttemptedStep = [...detail.steps].sort(
-    (a, b) => new Date(b.startedAt ?? 0).getTime() - new Date(a.startedAt ?? 0).getTime(),
-  )[0]?.stepType;
   const isTerminal = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(detail.status);
-  const current =
-    focusedStep ??
-    (isTerminal ? lastAttemptedStep : detail.currentStepType) ??
-    lastAttemptedStep ??
-    'QUERY_PLANNING';
+  const followedStep = followedWorkflowStep(detail, STEP_ORDER);
+  const current = focusedStep ?? followedStep;
   const isFollowing = focusedStep === null;
   const attempt = latestAttempt(detail, current);
   const completed = STAGES.flatMap((stage) => stage.steps).filter(
@@ -629,7 +617,7 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
         new Date(b.finishedAt ?? b.startedAt ?? 0).getTime() -
         new Date(a.finishedAt ?? a.startedAt ?? 0).getTime(),
     )[0];
-  const currentName = STEP_NAMES[detail.currentStepType ?? ''] ?? '等待下一步';
+  const currentName = STEP_NAMES[followedStep] ?? '等待下一步';
   const positionName =
     detail.status === 'CANCELLED'
       ? '停在：' + currentName
@@ -733,7 +721,7 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
           );
           const active =
             !isTerminal &&
-            (stage.steps.includes(detail.currentStepType as never) ||
+            (stage.steps.includes(followedStep as never) ||
               (index === 1 && detail.status === 'WAITING_DIRECTION') ||
               (index === 3 && detail.status === 'NEEDS_REVIEW'));
           const stopped =
@@ -742,7 +730,7 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
             (stage.steps.some((step) =>
               detail.steps.some((item) => item.stepType === step),
             ) ||
-              stage.steps.includes(detail.currentStepType as never));
+              stage.steps.includes(followedStep as never));
           return (
             <div
               className={'flow-phase ' + (done ? 'done' : active ? 'active' : '')}

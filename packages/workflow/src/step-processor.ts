@@ -2,7 +2,7 @@
  * 幂等步骤处理器中间件。
  *
  * 所有步骤任务都必须经过这里再进入业务处理器：
- * - 过期投递（步骤已 SUCCEEDED/终态）→ 直接确认，不重复执行；
+ * - 已完成步骤的重投 → 补做未完成的检查点推进，不重复执行业务处理器；
  * - 首次投递 → 写入 RUNNING → 执行业务处理器 → 写入终态与事件；
  * - 失败必须携带错误分类，是否重试由工作流引擎（3.2）决定。
  */
@@ -105,7 +105,34 @@ export function createStepProcessor(options: StepProcessorOptions) {
     const attempt = await ensureAttempt(db, data);
 
     // 5. 幂等短路：该尝试已到终态（重复投递）
-    if (attempt.status === 'SUCCEEDED' || attempt.status === 'CANCELLED') {
+    if (attempt.status === 'SUCCEEDED') {
+      if (
+        run.currentStepType === data.stepType &&
+        !['WAITING_DIRECTION', 'NEEDS_REVIEW', 'NEEDS_HUMAN'].includes(run.status)
+      ) {
+        await options.onStepSuccess?.({ run, data, attempt });
+      }
+      return;
+    }
+    if (attempt.status === 'CANCELLED') {
+      return;
+    }
+    if (attempt.status === 'FAILED') {
+      if (
+        run.status === 'QUEUED' ||
+        (run.currentStepType === data.stepType &&
+          !['RETRY_WAIT', 'NEEDS_HUMAN', 'WAITING_DIRECTION', 'NEEDS_REVIEW'].includes(
+            run.status,
+          ))
+      ) {
+        await options.onStepFailure?.({
+          run,
+          data,
+          attempt,
+          category: attempt.errorCategory ?? 'INTERNAL',
+          message: attempt.errorMessage ?? '步骤执行失败',
+        });
+      }
       return;
     }
 
@@ -133,12 +160,9 @@ export function createStepProcessor(options: StepProcessorOptions) {
     // 7. 执行业务处理器并接引擎钩子
     const startedAt = Date.now();
     metrics.increment('workflow_step_attempts_total');
+    let output: StepHandlerOutput;
     try {
-      const output = await handler({ data, run, attempt: running });
-      await succeedAttempt(db, run, running, output.outputRef);
-      await options.onStepSuccess?.({ run, data, attempt: running });
-      metrics.increment('workflow_step_success_total');
-      metrics.observe('workflow_step_duration_ms', Date.now() - startedAt);
+      output = await handler({ data, run, attempt: running });
     } catch (error) {
       const classified = classify(error);
       await failAttempt(db, run, running, classified);
@@ -151,7 +175,13 @@ export function createStepProcessor(options: StepProcessorOptions) {
       });
       metrics.increment('workflow_step_failure_total');
       metrics.observe('workflow_step_duration_ms', Date.now() - startedAt);
+      return;
     }
+    await succeedAttempt(db, run, running, output.outputRef);
+    // 步骤已成功时，推进失败必须交给队列重投，不能改写为业务失败。
+    await options.onStepSuccess?.({ run, data, attempt: running });
+    metrics.increment('workflow_step_success_total');
+    metrics.observe('workflow_step_duration_ms', Date.now() - startedAt);
   };
 }
 
@@ -264,15 +294,17 @@ async function succeedAttempt(
   attempt: StepAttemptRow,
   outputRef?: string,
 ): Promise<void> {
-  await db.db
-    .update(stepRuns)
-    .set({ status: 'SUCCEEDED', outputRef, finishedAt: new Date() })
-    .where(and(eq(stepRuns.id, attempt.id), eq(stepRuns.status, 'RUNNING')));
-  await appendWorkflowEvent(db.db, run.id, 'step.completed', {
-    stepRunId: attempt.id,
-    stepType: attempt.stepType,
-    attempt: attempt.attemptNo,
-    outputRef,
+  await db.db.transaction(async (tx) => {
+    await tx
+      .update(stepRuns)
+      .set({ status: 'SUCCEEDED', outputRef, finishedAt: new Date() })
+      .where(and(eq(stepRuns.id, attempt.id), eq(stepRuns.status, 'RUNNING')));
+    await appendWorkflowEvent(tx, run.id, 'step.completed', {
+      stepRunId: attempt.id,
+      stepType: attempt.stepType,
+      attempt: attempt.attemptNo,
+      outputRef,
+    });
   });
 }
 

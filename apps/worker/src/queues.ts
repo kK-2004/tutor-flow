@@ -37,8 +37,9 @@ export function createQueues(connection: Redis): QueueRegistry {
   const workflow = new Queue<StepJobData>(WORKFLOW_QUEUE, {
     connection,
     defaultJobOptions: {
-      // 重试策略由数据库工作流引擎拥有；BullMQ 只投递一次
-      attempts: 1,
+      // 业务失败由数据库工作流引擎重试；检查点推进异常由队列重投并幂等续接。
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 1000 },
       removeOnComplete: { age: 3600, count: 1000 },
       removeOnFail: { age: 3600 },
     },

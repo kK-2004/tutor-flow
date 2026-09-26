@@ -4,6 +4,93 @@ import { z } from 'zod';
 import { createAiSdkLlmGateway } from './ai-sdk-llm.js';
 
 describe('Vercel AI SDK 模型网关', () => {
+  it('未设置输出上限时不向模型发送上限，默认超时为 300 秒', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: 'chatcmpl-unlimited',
+            object: 'chat.completion',
+            created: 1,
+            model: 'custom-model',
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: '初稿正文' },
+                finish_reason: 'stop',
+              },
+            ],
+            usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      const gateway = createAiSdkLlmGateway({
+        baseURL: 'https://model.example/v1',
+        model: 'custom-model',
+        apiKey: 'test-key',
+        fetchImpl,
+      });
+      await gateway.complete({
+        task: 'canonical_article',
+        promptVersion: 'test@1',
+        systemPrompt: '系统规则',
+        userPrompt: '生成初稿',
+      });
+
+      const [, init] = fetchImpl.mock.calls[0] ?? [];
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('max_tokens');
+      expect(body).not.toHaveProperty('max_completion_tokens');
+      expect(timeoutSpy).toHaveBeenCalledWith(300_000);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it('空输出错误包含结束原因和 token 用量', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: 'chatcmpl-empty',
+            object: 'chat.completion',
+            created: 1,
+            model: 'custom-model',
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: '' },
+                finish_reason: 'length',
+              },
+            ],
+            usage: { prompt_tokens: 100, completion_tokens: 256, total_tokens: 356 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const gateway = createAiSdkLlmGateway({
+      baseURL: 'https://model.example/v1',
+      model: 'custom-model',
+      apiKey: 'test-key',
+      fetchImpl,
+    });
+
+    await expect(
+      gateway.complete({
+        task: 'canonical_article',
+        promptVersion: 'test@1',
+        systemPrompt: '系统规则',
+        userPrompt: '生成初稿',
+        maxTokens: 256,
+      }),
+    ).rejects.toThrow(
+      '模型返回了空内容（finishReason=length，outputTokens=256，maxOutputTokens=256）',
+    );
+  });
+
   it('向自定义 OpenAI 兼容地址传递提示词并返回内容与用量', async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>

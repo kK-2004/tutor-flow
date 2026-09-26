@@ -259,6 +259,27 @@ export async function transitionRunStatus(
   return updated;
 }
 
+/** 同一运行阶段内推进当前步骤，并保持乐观锁版本递增。 */
+export async function advanceRunStep(
+  db: DbExecutor,
+  runId: string,
+  stepType: NonNullable<WorkflowRun['currentStepType']>,
+  expectedVersion: number,
+): Promise<void> {
+  const [updated] = await db
+    .update(workflowRuns)
+    .set({
+      currentStepType: stepType,
+      version: expectedVersion + 1,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.version, expectedVersion)))
+    .returning();
+  if (updated === undefined) {
+    throw new OptimisticLockError();
+  }
+}
+
 /** 记录选中的候选方向（乐观锁；选向后由内容生成读取） */
 export async function setRunSelectedDirection(
   db: DbExecutor,

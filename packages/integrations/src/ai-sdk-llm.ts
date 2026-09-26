@@ -67,7 +67,9 @@ export function createAiSdkLlmGateway(options: AiSdkLlmOptions): LlmGateway {
                 ],
               }
             : { prompt: request.userPrompt }),
-          maxOutputTokens: request.maxTokens,
+          ...(request.maxTokens === undefined
+            ? {}
+            : { maxOutputTokens: request.maxTokens }),
           output: request.outputSchema
             ? Output.object({ schema: request.outputSchema, name: request.outputName })
             : undefined,
@@ -79,13 +81,16 @@ export function createAiSdkLlmGateway(options: AiSdkLlmOptions): LlmGateway {
               }
             : {}),
           maxRetries: 0,
-          abortSignal: AbortSignal.timeout(options.timeoutMs ?? 90_000),
+          abortSignal: AbortSignal.timeout(options.timeoutMs ?? 300_000),
         });
         const outputText = request.outputSchema
           ? JSON.stringify(result.output)
           : result.text;
         if (outputText.trim() === '') {
-          throw new GatewayError('模型返回了空内容', { retryable: true });
+          throw new GatewayError(
+            `模型返回了空内容（finishReason=${result.finishReason ?? '未知'}，outputTokens=${result.usage.outputTokens ?? 0}，maxOutputTokens=${request.maxTokens ?? '未设置'}）`,
+            { retryable: true },
+          );
         }
         return {
           text: outputText,

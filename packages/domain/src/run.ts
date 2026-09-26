@@ -50,7 +50,7 @@ export type HumanWaitRunStatus = (typeof HUMAN_WAIT_RUN_STATUSES)[number];
  * - NEEDS_HUMAN 人工解决后恢复到对应阶段或转入 FAILED/CANCELLED。
  */
 const RUN_TRANSITIONS: Record<WorkflowRunStatus, readonly WorkflowRunStatus[]> = {
-  QUEUED: ['RESEARCHING', 'CANCELLED', 'FAILED'],
+  QUEUED: ['RESEARCHING', 'RETRY_WAIT', 'NEEDS_HUMAN', 'CANCELLED', 'FAILED'],
   RESEARCHING: [
     'WAITING_DIRECTION',
     'GENERATING',

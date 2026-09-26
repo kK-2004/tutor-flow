@@ -168,6 +168,16 @@ describe('规范文章生成（5.1）', () => {
     expect(generation.model).toBe('fake-model-1');
     expect(generation.promptVersion).toBe('canonical-article@1');
     expect(generation.tokenUsage.completionTokens).toBeGreaterThan(0);
+    expect(
+      llm.calls.find((request) => request.task === 'canonical_article'),
+    ).not.toHaveProperty('maxTokens');
+    const canonicalRequest = llm.calls.find(
+      (request) => request.task === 'canonical_article',
+    );
+    expect(canonicalRequest?.outputName).toBe('canonical_article');
+    expect(
+      canonicalRequest?.outputSchema?.safeParse(JSON.parse(canonicalScript)).success,
+    ).toBe(true);
   });
 
   it('未引用任何事实时拒绝（CONTENT）', async () => {
@@ -223,6 +233,11 @@ describe('小红书衍生稿适配（5.2）', () => {
     expect(usage?.claimId).toBeDefined();
     const adaptCalls = llm.calls.filter((request) => request.task === 'xhs_adapt');
     expect(adaptCalls).toHaveLength(1);
+    expect(adaptCalls[0]).not.toHaveProperty('maxTokens');
+    expect(adaptCalls[0]?.outputName).toBe('xiaohongshu_draft');
+    expect(adaptCalls[0]?.outputSchema?.safeParse(JSON.parse(adaptScript)).success).toBe(
+      true,
+    );
     expect(
       llm.calls.filter((request) => request.task === 'claim_extraction'),
     ).toHaveLength(0);

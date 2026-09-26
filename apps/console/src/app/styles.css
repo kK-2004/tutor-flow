@@ -3323,7 +3323,6 @@ html[data-theme='dark'] .research-code-block {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  overscroll-behavior: contain;
   padding: 9px 14px 18px;
 }
 .flow-stage h3 {
@@ -3410,7 +3409,6 @@ html[data-theme='dark'] .research-code-block {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  overscroll-behavior: contain;
   padding: 20px 24px 28px;
 }
 .flow-inspector-meta,

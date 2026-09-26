@@ -534,12 +534,14 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const chainBodyRef = useRef<HTMLDivElement>(null);
+  const lastFollowedStepRef = useRef<string | null>(null);
   useEffect(() => {
     setFocusedStep(null);
     setSelected('');
     setDetail(null);
     setError('');
     setLoading(true);
+    lastFollowedStepRef.current = null;
   }, [id]);
   const load = useCallback(() => {
     setLoading(true);
@@ -559,13 +561,19 @@ export function WorkflowDetailView({ id, onBack }: { id: string; onBack: () => v
     return () => window.clearInterval(timer);
   }, [load]);
   useEffect(() => {
-    if (!detail || focusedStep !== null) return;
+    if (focusedStep !== null) {
+      lastFollowedStepRef.current = null;
+      return;
+    }
+    if (!detail) return;
     const followedStep = followedWorkflowStep(detail, STEP_ORDER);
+    if (lastFollowedStepRef.current === followedStep) return;
     const scrollBody = chainBodyRef.current;
     const step = scrollBody?.querySelector<HTMLElement>(
       `[data-step-type="${followedStep}"]`,
     );
     if (!scrollBody || !step) return;
+    lastFollowedStepRef.current = followedStep;
     const bodyRect = scrollBody.getBoundingClientRect();
     const stepRect = step.getBoundingClientRect();
     if (stepRect.top < bodyRect.top) {
